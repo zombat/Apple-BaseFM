@@ -1,4 +1,4 @@
-# dspy-apple
+# Apple-BaseFM
 
 Apple Silicon and Apple Intelligence language model backends for [DSPy](https://github.com/stanfordnlp/dspy).
 
@@ -23,19 +23,19 @@ or usable standalone with a minimal stub when it is not.
 ### Minimal (standalone, no DSPy)
 
 ```bash
-pip install dspy-apple
+pip install git+https://github.com/zombat/Apple-BaseFM.git
 ```
 
 ### With DSPy
 
 ```bash
-pip install "dspy-apple[dspy]"
+pip install "apple-basefm[dspy] @ git+https://github.com/zombat/Apple-BaseFM.git"
 ```
 
 ### MLX backend (local models)
 
 ```bash
-pip install "dspy-apple[mlx,dspy]"
+pip install "apple-basefm[mlx,dspy] @ git+https://github.com/zombat/Apple-BaseFM.git"
 ```
 
 ### Apple Foundation Models (`AppleFoundationLM`)
@@ -45,7 +45,7 @@ Install it from [Apple's developer distribution channel](https://developer.apple
 on a Mac running macOS 26+.
 
 ```bash
-pip install "dspy-apple[foundation,dspy]"
+pip install "apple-basefm[foundation,dspy] @ git+https://github.com/zombat/Apple-BaseFM.git"
 # then install apple-fm-sdk separately from Apple
 ```
 
@@ -56,7 +56,7 @@ pip install "dspy-apple[foundation,dspy]"
 ### 1. Standalone — no DSPy required
 
 ```python
-from dspy_apple import AppleLocalLM
+from apple_basefm import AppleLocalLM
 
 lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
 response = lm.forward(
@@ -69,7 +69,7 @@ print(response.choices[0].message.content)
 
 ```python
 import dspy
-from dspy_apple import AppleLocalLM
+from apple_basefm import AppleLocalLM
 
 lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
 dspy.configure(lm=lm)
@@ -82,7 +82,7 @@ print(qa(question="Explain quantum entanglement in one sentence.").answer)
 
 ```python
 import dspy
-from dspy_apple import AppleLocalLM
+from apple_basefm import AppleLocalLM
 
 local_lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
 cloud_lm = dspy.LM("openai/gpt-4o-mini")
@@ -109,7 +109,7 @@ Requires macOS 26+ with Apple Intelligence and the apple-fm-sdk.
 
 ```python
 import dspy
-from dspy_apple import AppleFoundationLM
+from apple_basefm import AppleFoundationLM
 
 lm = AppleFoundationLM()
 dspy.configure(lm=lm)
@@ -140,7 +140,7 @@ Key parameters:
 ## AppleLocalLM
 
 ```python
-from dspy_apple import AppleLocalLM
+from apple_basefm import AppleLocalLM
 
 lm = AppleLocalLM(
     model="mlx-community/Llama-3.2-3B-Instruct-4bit",
@@ -168,19 +168,19 @@ Key parameters:
 
 ```bash
 git clone https://github.com/zombat/Apple-BaseFM
-cd dspy-apple
+cd apple-basefm
 pip install -e ".[dev]"
 pytest tests/ -v          # unit tests (no Apple hardware required)
 pytest tests/integration/ # integration tests (requires macOS 26+ / Apple Intelligence)
-ruff check dspy_apple/
-mypy dspy_apple/
+ruff check apple_basefm/
+mypy apple_basefm/
 ```
 
 ---
 
 ## Compatibility matrix
 
-| dspy-apple | DSPy | Python | macOS (local models) | macOS (Foundation) |
+| apple-basefm | DSPy | Python | macOS (local models) | macOS (Foundation) |
 |---|---|---|---|---|
 | 0.1.x | ≥ 2.5.0 | ≥ 3.11 | 14+ (Apple Silicon) | 26+ (Apple Intelligence) |
 

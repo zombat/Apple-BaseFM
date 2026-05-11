@@ -9,7 +9,7 @@ Demonstrates three usage patterns:
 
 Requirements:
   * macOS 14+ on Apple Silicon (M1 / M2 / M3 / M4)
-  * pip install "dspy-apple[mlx,dspy]"
+  * pip install "apple-basefm[mlx,dspy]"
 
 For AppleFoundationLM (Apple Intelligence):
   * macOS 26+ with Apple Intelligence enabled
@@ -26,7 +26,7 @@ import os
 
 def pattern_1_standalone() -> None:
     """Run a single local model inference without DSPy."""
-    from dspy_apple import AppleLocalLM
+    from apple_basefm import AppleLocalLM
 
     lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
 
@@ -48,7 +48,7 @@ def pattern_2_full_dspy() -> None:
     """Configure AppleLocalLM as the global DSPy LM and use dspy.Predict."""
     import dspy
 
-    from dspy_apple import AppleLocalLM
+    from apple_basefm import AppleLocalLM
 
     lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
     dspy.configure(lm=lm)
@@ -70,7 +70,7 @@ def pattern_3_mixed_pipeline() -> None:
     """
     import dspy
 
-    from dspy_apple import AppleLocalLM
+    from apple_basefm import AppleLocalLM
 
     if not os.environ.get("OPENAI_API_KEY"):
         print("[Mixed] OPENAI_API_KEY not set — skipping cloud reasoning step.")
@@ -116,7 +116,7 @@ def pattern_4_apple_intelligence() -> None:
     try:
         import dspy
 
-        from dspy_apple import AppleFoundationLM
+        from apple_basefm import AppleFoundationLM
 
         lm = AppleFoundationLM()
         dspy.configure(lm=lm)
@@ -142,7 +142,7 @@ def pattern_4_apple_intelligence() -> None:
 if __name__ == "__main__":
     import argparse
 
-    parser = argparse.ArgumentParser(description="dspy-apple usage examples")
+    parser = argparse.ArgumentParser(description="apple-basefm usage examples")
     parser.add_argument(
         "--pattern",
         choices=["1", "2", "3", "4", "all"],

@@ -1,8 +1,8 @@
-"""Unit tests for dspy_apple.apple_fm.AppleFoundationLM.
+"""Unit tests for apple_basefm.apple_fm.AppleFoundationLM.
 
 Isolation strategy:
     conftest.py injects fake apple_fm_sdk and mlx_lm via monkeypatch before
-    each test. After injection we reload dspy_apple.apple_fm so the module picks
+    each test. After injection we reload apple_basefm.apple_fm so the module picks
     up the patched sys.modules.
 """
 from __future__ import annotations
@@ -26,9 +26,9 @@ import pytest
 
 def _reload_apple_fm() -> types.ModuleType:
     """Force a clean import of apple_fm against whatever sys.modules contains."""
-    if "dspy_apple.apple_fm" in sys.modules:
-        del sys.modules["dspy_apple.apple_fm"]
-    return importlib.import_module("dspy_apple.apple_fm")
+    if "apple_basefm.apple_fm" in sys.modules:
+        del sys.modules["apple_basefm.apple_fm"]
+    return importlib.import_module("apple_basefm.apple_fm")
 
 
 # ---------------------------------------------------------------------------
@@ -65,9 +65,9 @@ class TestConstruction:
     def test_import_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """ImportError must mention Apple developer channel, not PyPI."""
         monkeypatch.delitem(sys.modules, "apple_fm_sdk", raising=False)
-        if "dspy_apple.apple_fm" in sys.modules:
-            del sys.modules["dspy_apple.apple_fm"]
-        mod = importlib.import_module("dspy_apple.apple_fm")
+        if "apple_basefm.apple_fm" in sys.modules:
+            del sys.modules["apple_basefm.apple_fm"]
+        mod = importlib.import_module("apple_basefm.apple_fm")
         with (
             patch("platform.system", return_value="Darwin"),
             patch.dict(sys.modules, {"apple_fm_sdk": None}),  # type: ignore[arg-type]
@@ -358,8 +358,8 @@ class TestForwardCache:
 
     def test_forward_hits_cache_on_second_call(self, fm_instance: Any) -> None:
         """Second identical call must use cache, not call the SDK again."""
-        import dspy_apple._compat as _compat_mod
-        from dspy_apple._compat import _NullCache
+        import apple_basefm._compat as _compat_mod
+        from apple_basefm._compat import _NullCache
 
         # Use an in-memory cache so the test is hermetic regardless of whether
         # a real DSPy disk cache has stale entries.
@@ -384,7 +384,7 @@ class TestForwardCache:
             return await original_aforward(*args, **kwargs)
 
         fm_instance.aforward = _counting_aforward
-        with patch("dspy_apple.apple_fm.get_dspy_cache", return_value=dict_cache):
+        with patch("apple_basefm.apple_fm.get_dspy_cache", return_value=dict_cache):
             fm_instance.forward(messages=[{"role": "user", "content": "cached"}])
             fm_instance.forward(messages=[{"role": "user", "content": "cached"}])
         assert len(sdk_calls) == 1, "Cache hit on second call must skip aforward()"

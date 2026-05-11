@@ -6,16 +6,16 @@ Provides:
 """
 
 try:
-    from dspy_apple.apple_fm import AppleFoundationLM
+    from apple_basefm.apple_fm import AppleFoundationLM
 except (ImportError, RuntimeError):
     AppleFoundationLM = None  # type: ignore[assignment, misc]
 
 try:
-    from dspy_apple.apple_local import AppleLocalLM
+    from apple_basefm.apple_local import AppleLocalLM
 except (ImportError, RuntimeError, NotImplementedError):
     AppleLocalLM = None  # type: ignore[assignment, misc]
 
-from dspy_apple._compat import DSPY_AVAILABLE
+from apple_basefm._compat import DSPY_AVAILABLE
 
 __version__ = "0.1.0"
 __all__ = ["AppleFoundationLM", "AppleLocalLM", "DSPY_AVAILABLE", "__version__"]

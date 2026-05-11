@@ -1,4 +1,4 @@
-"""Unit tests for dspy_apple.apple_local.AppleLocalLM.
+"""Unit tests for apple_basefm.apple_local.AppleLocalLM.
 
 Isolation strategy:
     conftest.py injects fake mlx_lm via monkeypatch before every test.
@@ -23,9 +23,9 @@ import pytest
 
 
 def _reload_apple_local() -> types.ModuleType:
-    if "dspy_apple.apple_local" in sys.modules:
-        del sys.modules["dspy_apple.apple_local"]
-    return importlib.import_module("dspy_apple.apple_local")
+    if "apple_basefm.apple_local" in sys.modules:
+        del sys.modules["apple_basefm.apple_local"]
+    return importlib.import_module("apple_basefm.apple_local")
 
 
 @pytest.fixture()
@@ -244,7 +244,7 @@ class TestForwardCache:
             return original_generate(messages, temperature, max_tokens, lps)
 
         local_instance._generate = _counting_generate
-        with patch("dspy_apple.apple_local.get_dspy_cache", return_value=dict_cache):
+        with patch("apple_basefm.apple_local.get_dspy_cache", return_value=dict_cache):
             local_instance.forward(messages=[{"role": "user", "content": "cached msg"}])
             local_instance.forward(messages=[{"role": "user", "content": "cached msg"}])
         assert len(generate_calls) == 1
@@ -353,7 +353,7 @@ class TestAforwardClamping:
         self, local_instance: Any
     ) -> None:
         """With send_stream active, temperature must still be clamped."""
-        from dspy_apple._compat import get_send_stream
+        from apple_basefm._compat import get_send_stream
 
         captured_temperatures: list[float] = []
 
@@ -376,8 +376,8 @@ class TestAforwardClamping:
 
         fake_stream.send = _noop_send
 
-        with patch("dspy_apple._compat.get_send_stream", return_value=fake_stream):
-            with patch("dspy_apple.apple_local.get_send_stream", return_value=fake_stream):
+        with patch("apple_basefm._compat.get_send_stream", return_value=fake_stream):
+            with patch("apple_basefm.apple_local.get_send_stream", return_value=fake_stream):
                 try:
                     await local_instance.aforward(
                         messages=[{"role": "user", "content": "hi"}],

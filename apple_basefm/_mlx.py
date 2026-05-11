@@ -2,7 +2,7 @@
 
 Provides _MLXMixin and its supporting dataclass / helpers.
 These are private implementation details — import AppleLocalLM from
-dspy_apple.apple_local for all public usage.
+apple_basefm.apple_local for all public usage.
 """
 from __future__ import annotations
 
@@ -14,8 +14,8 @@ import threading
 from collections.abc import AsyncGenerator
 from typing import Any
 
-from dspy_apple._base import _flatten_messages
-from dspy_apple._response import _FMResponse, _FMUsage  # noqa: F401 — re-exported for callers
+from apple_basefm._base import _flatten_messages
+from apple_basefm._response import _FMResponse, _FMUsage  # noqa: F401 — re-exported for callers
 
 logger = logging.getLogger(__name__)
 

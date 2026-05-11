@@ -1,4 +1,4 @@
-"""Shared fixtures for dspy-apple unit tests.
+"""Shared fixtures for apple-basefm unit tests.
 
 All tests run on Linux / non-macOS CI. The fake SDK modules injected here
 replace the real apple_fm_sdk and mlx_lm so no Apple hardware is needed.

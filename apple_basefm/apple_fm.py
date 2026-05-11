@@ -20,9 +20,9 @@ import platform
 from collections import OrderedDict
 from typing import Any, Literal, get_args, get_origin
 
-from dspy_apple._base import _AppleBaseLM, _flatten_messages, _run_async
-from dspy_apple._compat import get_dspy_cache
-from dspy_apple._response import _FMChoice, _FMMessage, _FMResponse, _FMUsage  # noqa: F401
+from apple_basefm._base import _AppleBaseLM, _flatten_messages, _run_async
+from apple_basefm._compat import get_dspy_cache
+from apple_basefm._response import _FMChoice, _FMMessage, _FMResponse, _FMUsage  # noqa: F401
 
 logger = logging.getLogger(__name__)
 

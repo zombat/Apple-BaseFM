@@ -2,7 +2,7 @@
 
 Provides the helpers and base class shared by apple_fm.AppleFoundationLM
 and apple_local.AppleLocalLM. Private implementation detail — only the
-concrete adapter classes are part of the public dspy_apple API.
+concrete adapter classes are part of the public apple_basefm API.
 """
 from __future__ import annotations
 
@@ -10,8 +10,8 @@ import asyncio
 import logging
 from typing import Any
 
-from dspy_apple._compat import BaseLM
-from dspy_apple._response import _FMChoice, _FMMessage, _FMResponse, _FMUsage
+from apple_basefm._compat import BaseLM
+from apple_basefm._response import _FMChoice, _FMMessage, _FMResponse, _FMUsage
 
 logger = logging.getLogger(__name__)
 

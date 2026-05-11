@@ -27,17 +27,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Configurable concurrency via `max_concurrency` + `asyncio.Semaphore`.
   - `temperature` clamped to `[0.0, 2.0]`; `max_tokens` floored at `1`.
 
-- **`dspy_apple._compat`** — dual-mode shim: uses real `dspy.BaseLM` when DSPy is
+- **`apple_basefm._compat`** — dual-mode shim: uses real `dspy.BaseLM` when DSPy is
   installed; provides a minimal stub when it is not.
 
-- **`dspy_apple._response`** — shared `_FMResponse` / `_FMUsage` / `_FMChoice` /
+- **`apple_basefm._response`** — shared `_FMResponse` / `_FMUsage` / `_FMChoice` /
   `_FMMessage` dataclasses satisfying the `BaseLM` contract including
   `_hidden_params["response_cost"]`.
 
-- **`dspy_apple._base`** — shared base class `_AppleBaseLM` with helpers:
+- **`apple_basefm._base`** — shared base class `_AppleBaseLM` with helpers:
   `_build_response()`, `_flatten_messages()`, `_run_async()`.
 
-- **`dspy_apple._mlx`** — MLX internals: `_MLXMixin`, `_LocalStreamChunk`,
+- **`apple_basefm._mlx`** — MLX internals: `_MLXMixin`, `_LocalStreamChunk`,
   `_apply_chat_template()`, `_response_format_to_schema()`.
 
 - Optional extras: `[foundation]`, `[mlx]`, `[dspy]`, `[dev]`, `[all]`.

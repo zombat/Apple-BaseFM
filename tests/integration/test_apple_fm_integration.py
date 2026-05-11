@@ -46,7 +46,7 @@ skip_no_apple_intelligence = pytest.mark.skipif(
 class TestAppleFoundationLMIntegration:
     def test_basic_text_generation(self) -> None:
         """Smoke test: ask a trivial question, assert non-empty response."""
-        from dspy_apple import AppleFoundationLM
+        from apple_basefm import AppleFoundationLM
 
         lm = AppleFoundationLM()
         response = lm.forward(messages=[{"role": "user", "content": "What is 2 + 2?"}])
@@ -55,7 +55,7 @@ class TestAppleFoundationLMIntegration:
 
     def test_response_has_required_hidden_params(self) -> None:
         """_FMResponse._hidden_params must contain response_cost."""
-        from dspy_apple import AppleFoundationLM
+        from apple_basefm import AppleFoundationLM
 
         lm = AppleFoundationLM()
         response = lm.forward(messages=[{"role": "user", "content": "Say hello."}])
@@ -67,7 +67,7 @@ class TestAppleFoundationLMIntegration:
 
         from pydantic import BaseModel
 
-        from dspy_apple import AppleFoundationLM
+        from apple_basefm import AppleFoundationLM
 
         class Greeting(BaseModel):
             message: str
@@ -88,7 +88,7 @@ class TestAppleFoundationLMIntegration:
 
     def test_timeout_respected(self) -> None:
         """A very short timeout must raise RuntimeError without hanging."""
-        from dspy_apple import AppleFoundationLM
+        from apple_basefm import AppleFoundationLM
 
         lm = AppleFoundationLM(timeout=0.001)
         with pytest.raises(RuntimeError, match="timed out"):
@@ -103,7 +103,7 @@ class TestAppleFoundationLMIntegration:
 
     def test_guardrail_violation_message(self) -> None:
         """A clearly harmful prompt must raise RuntimeError (not crash silently)."""
-        from dspy_apple import AppleFoundationLM
+        from apple_basefm import AppleFoundationLM
 
         lm = AppleFoundationLM()
         # Apple Intelligence will reject this via GuardrailViolation.

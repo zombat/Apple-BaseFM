@@ -10,7 +10,7 @@ The primary use case is as a free, private, offline preprocessing layer in
 DSPy pipelines that otherwise use expensive cloud LLMs::
 
     import dspy
-    from dspy_apple import AppleLocalLM
+    from apple_basefm import AppleLocalLM
 
     local_lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
     cloud_lm = dspy.LM("anthropic/claude-sonnet-4-6")
@@ -36,15 +36,15 @@ import logging
 import platform
 from typing import Any
 
-from dspy_apple._base import _AppleBaseLM
-from dspy_apple._compat import get_caller_predict, get_dspy_cache, get_send_stream
-from dspy_apple._mlx import (
+from apple_basefm._base import _AppleBaseLM
+from apple_basefm._compat import get_caller_predict, get_dspy_cache, get_send_stream
+from apple_basefm._mlx import (
     _apply_chat_template,
     _LocalStreamChunk,
     _MLXMixin,
     _response_format_to_schema,
 )
-from dspy_apple._response import _FMResponse, _FMUsage
+from apple_basefm._response import _FMResponse, _FMUsage
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
         if backend == "coreml":
             raise NotImplementedError(
                 "CoreML backend is not yet implemented. "
-                "Contributions welcome — see dspy_apple/apple_local.py.\n"
+                "Contributions welcome — see apple_basefm/apple_local.py.\n"
                 "For now, use backend='mlx' or AppleFoundationLM() for the "
                 "Apple Intelligence system model."
             )

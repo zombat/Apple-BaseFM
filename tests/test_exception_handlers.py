@@ -1,4 +1,4 @@
-"""Tests for exception-handler branches across dspy_apple.
+"""Tests for exception-handler branches across apple_basefm.
 
 Rule enforced: no bare ``except Exception:`` without binding the variable.
 Each test below corresponds to one exception-handling branch and verifies that:
@@ -25,8 +25,8 @@ import pytest
 
 
 def _reload_apple_local() -> types.ModuleType:
-    sys.modules.pop("dspy_apple.apple_local", None)
-    return importlib.import_module("dspy_apple.apple_local")
+    sys.modules.pop("apple_basefm.apple_local", None)
+    return importlib.import_module("apple_basefm.apple_local")
 
 
 @pytest.fixture()
@@ -68,7 +68,7 @@ class TestCompatShimsReturnNoneOnDspyError:
 
     def test_get_send_stream_returns_none_when_dspy_settings_raises(self) -> None:
         """If dspy.settings raises, get_send_stream() must return None."""
-        import dspy_apple._compat as compat
+        import apple_basefm._compat as compat
 
         broken = _BrokenDspySettings()
         with patch.dict(sys.modules, {"dspy": broken}):  # type: ignore[arg-type]
@@ -76,7 +76,7 @@ class TestCompatShimsReturnNoneOnDspyError:
         assert result is None
 
     def test_get_caller_predict_returns_none_when_dspy_settings_raises(self) -> None:
-        import dspy_apple._compat as compat
+        import apple_basefm._compat as compat
 
         broken = _BrokenDspySettings()
         with patch.dict(sys.modules, {"dspy": broken}):  # type: ignore[arg-type]
@@ -84,7 +84,7 @@ class TestCompatShimsReturnNoneOnDspyError:
         assert result is None
 
     def test_get_usage_tracker_returns_none_when_dspy_settings_raises(self) -> None:
-        import dspy_apple._compat as compat
+        import apple_basefm._compat as compat
 
         broken = _BrokenDspySettings()
         with patch.dict(sys.modules, {"dspy": broken}):  # type: ignore[arg-type]
@@ -97,12 +97,12 @@ class TestCompatShimsReturnNoneOnDspyError:
         """When the exception is caught, a DEBUG message must be emitted."""
         import logging
 
-        import dspy_apple._compat as compat
+        import apple_basefm._compat as compat
 
         broken = _BrokenDspySettings()
         with (
             patch.dict(sys.modules, {"dspy": broken}),  # type: ignore[arg-type]
-            caplog.at_level(logging.DEBUG, logger="dspy_apple._compat"),
+            caplog.at_level(logging.DEBUG, logger="apple_basefm._compat"),
         ):
             compat.get_send_stream()
         assert "get_send_stream" in caplog.text
@@ -117,7 +117,7 @@ class TestPydanticToGenerableExceptionPaths:
     """_pydantic_to_generable must not raise when fm.guide() or make_dataclass fails."""
 
     def _get_fn(self) -> Any:
-        import dspy_apple.apple_fm as afm
+        import apple_basefm.apple_fm as afm
 
         return afm._pydantic_to_generable
 
@@ -149,7 +149,7 @@ class TestPydanticToGenerableExceptionPaths:
         class Item(BaseModel):
             name: str = Field(pattern=r"^\w+$")
 
-        with caplog.at_level(logging.WARNING, logger="dspy_apple.apple_fm"):
+        with caplog.at_level(logging.WARNING, logger="apple_basefm.apple_fm"):
             self._get_fn()(Item, fake_apple_fm_sdk)
 
         assert "UNIQUE_GUIDE_ERROR" in caplog.text
@@ -181,7 +181,7 @@ class TestPydanticToGenerableExceptionPaths:
         class Simple(BaseModel):
             value: str
 
-        with caplog.at_level(logging.WARNING, logger="dspy_apple.apple_fm"):
+        with caplog.at_level(logging.WARNING, logger="apple_basefm.apple_fm"):
             self._get_fn()(Simple, fake_apple_fm_sdk)
 
         assert "UNIQUE_MAKE_DC_ERROR" in caplog.text
@@ -199,7 +199,7 @@ class TestMakeGenerationOptionsExceptionPath:
         self, fake_apple_fm_sdk: types.ModuleType
     ) -> None:
         with patch("platform.system", return_value="Darwin"):
-            import dspy_apple.apple_fm as afm
+            import apple_basefm.apple_fm as afm
 
             lm = afm.AppleFoundationLM(temperature=0.5)
 
@@ -215,14 +215,14 @@ class TestMakeGenerationOptionsExceptionPath:
         import logging
 
         with patch("platform.system", return_value="Darwin"):
-            import dspy_apple.apple_fm as afm
+            import apple_basefm.apple_fm as afm
 
             lm = afm.AppleFoundationLM(temperature=0.5)
 
         fake_apple_fm_sdk.GenerationOptions = MagicMock(  # type: ignore[attr-defined]
             side_effect=ValueError("UNIQUE_GEN_OPTS_ERROR")
         )
-        with caplog.at_level(logging.DEBUG, logger="dspy_apple.apple_fm"):
+        with caplog.at_level(logging.DEBUG, logger="apple_basefm.apple_fm"):
             lm._make_generation_options()
 
         assert "UNIQUE_GEN_OPTS_ERROR" in caplog.text
@@ -241,7 +241,7 @@ class TestAforwardToolConversionFailure:
         self, fake_apple_fm_sdk: types.ModuleType  # noqa: ARG002
     ) -> None:
         with patch("platform.system", return_value="Darwin"):
-            import dspy_apple.apple_fm as afm
+            import apple_basefm.apple_fm as afm
 
             lm = afm.AppleFoundationLM()
 
@@ -260,11 +260,11 @@ class TestAforwardToolConversionFailure:
         import logging
 
         with patch("platform.system", return_value="Darwin"):
-            import dspy_apple.apple_fm as afm
+            import apple_basefm.apple_fm as afm
 
             lm = afm.AppleFoundationLM()
 
-        with caplog.at_level(logging.WARNING, logger="dspy_apple.apple_fm"):
+        with caplog.at_level(logging.WARNING, logger="apple_basefm.apple_fm"):
             await lm.aforward(
                 messages=[{"role": "user", "content": "hello"}],
                 tools=[_BadTool()],
@@ -281,7 +281,7 @@ class TestApplyChatTemplateExceptionPath:
     """When apply_chat_template raises, _apply_chat_template must fall back to concat."""
 
     def test_apply_chat_template_failure_falls_back_to_concat(self) -> None:
-        from dspy_apple._mlx import _apply_chat_template
+        from apple_basefm._mlx import _apply_chat_template
 
         class BadTokenizer:
             def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
@@ -296,20 +296,20 @@ class TestApplyChatTemplateExceptionPath:
     ) -> None:
         import logging
 
-        from dspy_apple._mlx import _apply_chat_template
+        from apple_basefm._mlx import _apply_chat_template
 
         class BadTokenizer:
             def apply_chat_template(self, messages: Any, **kwargs: Any) -> str:
                 raise RuntimeError("UNIQUE_TEMPLATE_ERROR")
 
-        with caplog.at_level(logging.DEBUG, logger="dspy_apple._mlx"):
+        with caplog.at_level(logging.DEBUG, logger="apple_basefm._mlx"):
             _apply_chat_template(BadTokenizer(), [{"role": "user", "content": "x"}])
 
         assert "UNIQUE_TEMPLATE_ERROR" in caplog.text
 
     def test_apply_chat_template_no_method_falls_back_silently(self) -> None:
         """Tokenizers without apply_chat_template must fall back without raising."""
-        from dspy_apple._mlx import _apply_chat_template
+        from apple_basefm._mlx import _apply_chat_template
 
         class PlainTokenizer:
             pass
@@ -405,7 +405,7 @@ class TestBuildSchemaProcessorExceptionPaths:
                     "outlines.generator": fake_gen,
                 },
             ),
-            caplog.at_level(logging.WARNING, logger="dspy_apple._mlx"),
+            caplog.at_level(logging.WARNING, logger="apple_basefm._mlx"),
         ):
             lm._build_schema_processor(schema)
 
