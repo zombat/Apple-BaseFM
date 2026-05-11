@@ -189,3 +189,17 @@ mypy dspy_apple/
 ## License
 
 MIT — see [LICENSE](LICENSE).
+
+---
+
+## Legal
+
+This project contains code derived from [DSPy](https://github.com/stanfordnlp/dspy)
+(PR #9473), copyright © 2023 Stanford Future Data Systems, used under the MIT License.
+
+Apple, Apple Intelligence, Apple Silicon, and Foundation Models are trademarks of
+Apple Inc. The `apple_fm_sdk` is proprietary Apple software, not included here, and
+must be obtained through Apple's developer channels subject to Apple's terms.
+
+This project is independent and is not affiliated with, endorsed by, or sponsored
+by Apple Inc. or Stanford University.
