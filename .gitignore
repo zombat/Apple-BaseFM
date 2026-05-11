@@ -1,0 +1,15 @@
+.github/skills
+.github/instructions
+__pycache__/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+*.whl
+*.tar.gz
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

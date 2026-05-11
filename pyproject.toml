@@ -1,0 +1,75 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dspy-apple"
+version = "0.1.0"
+description = "Apple Silicon and Apple Intelligence backends for DSPy"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.11"
+authors = [{ name = "zombat" }]
+keywords = ["dspy", "apple", "mlx", "apple-intelligence", "on-device", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Operating System :: MacOS",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# No hard runtime dependencies: platform-specific packages are optional extras.
+# This ensures `pip install dspy-apple` never fails on Linux.
+dependencies = []
+
+[project.optional-dependencies]
+
+# Full DSPy integration (optimizers, history, callbacks, caching)
+dspy = ["dspy-ai>=2.5.0"]
+
+# Apple Intelligence backend (macOS 26+, Apple Intelligence enabled)
+# apple_fm_sdk is not on PyPI; install separately from Apple's developer channel.
+foundation = ["nest-asyncio>=1.6.0"]
+
+# MLX backend (Apple Silicon, macOS 14+)
+mlx = ["mlx-lm>=0.22.0"]
+
+# Development and testing
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "dspy-ai>=2.5.0",
+]
+
+# All optional runtime extras combined
+all = ["dspy-apple[foundation,mlx]"]
+
+[project.urls]
+Repository = "https://github.com/zombat/Apple-BaseFM"
+"Bug Tracker" = "https://github.com/zombat/Apple-BaseFM/issues"
+"DSPy PR" = "https://github.com/stanfordnlp/dspy/pull/9473"
+
+[tool.hatch.build.targets.wheel]
+packages = ["dspy_apple"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+norecursedirs = ["tests/integration"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
