@@ -139,18 +139,21 @@ def pattern_4_apple_intelligence() -> None:
         dspy.configure(lm=lm)
 
         sentiment_analyzer = dspy.Predict("text -> sentiment_label, confidence_score")
-        responder = dspy.Predict("question -> answer")
         
         prompt = "I absolutely love the new Apple Silicon chips! Tell me more about their performance."
         
         # Analyze sentiment of the input
         sentiment_result = sentiment_analyzer(text=prompt)
         
-        # Generate a response
-        response_result = responder(question=prompt)
+        # Generate a response directly via the model's forward() method
+        response = lm.forward(
+            messages=[
+                {"role": "user", "content": prompt}
+            ]
+        )
         
         print("[Foundation] Prompt:", prompt)
-        print("[Foundation] Response:", response_result.answer)
+        print("[Foundation] Response:", response.choices[0].message.content if response.choices else "(no response)")
         print("[Foundation] Sentiment:", sentiment_result.sentiment_label)
         print("[Foundation] Confidence:", sentiment_result.confidence_score)
     except (ImportError, RuntimeError) as exc:
