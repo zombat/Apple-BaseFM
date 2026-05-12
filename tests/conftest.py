@@ -90,8 +90,14 @@ def _make_fake_mlx_lm() -> types.ModuleType:
     """Build a synthetic mlx_lm module for unit tests."""
     mlx_lm = types.ModuleType("mlx_lm")
 
+    class _FakeSelfAttn:
+        head_dim = 64
+
+    class _FakeLayer:
+        self_attn = _FakeSelfAttn()
+
     class FakeModel:
-        pass
+        layers = [_FakeLayer()]
 
     class FakeTokenizer:
         model_max_length = 4096
@@ -142,6 +148,41 @@ def _make_fake_mlx_lm() -> types.ModuleType:
     sample_utils.make_sampler = make_sampler  # type: ignore[attr-defined]
     mlx_lm.sample_utils = sample_utils  # type: ignore[attr-defined]
 
+    # models.cache submodule — provides QuantizedKVCache for _kv/cache_v2.py
+    models_cache = types.ModuleType("mlx_lm.models.cache")
+
+    class FakeQuantizedKVCache:
+        """Minimal QuantizedKVCache stub for unit tests."""
+
+        step = 256
+
+        def __init__(self, bits: int = 4, group_size: int = 64) -> None:
+            self.bits = bits
+            self.group_size = group_size
+            self._stored_keys: list[Any] = []
+            self._stored_values: list[Any] = []
+            self.offset = 0
+
+        def update_and_fetch(self, keys: Any, values: Any) -> tuple[Any, Any]:
+            self._stored_keys.append(keys)
+            self._stored_values.append(values)
+            self.offset += 1
+            # Return the most-recent K/V as a stand-in for the full history.
+            return keys, values
+
+        @property
+        def state(self) -> list[Any]:
+            return self._stored_keys + self._stored_values
+
+        @property
+        def nbytes(self) -> int:
+            return 0
+
+    models_cache.QuantizedKVCache = FakeQuantizedKVCache  # type: ignore[attr-defined]
+    models = types.ModuleType("mlx_lm.models")
+    models.cache = models_cache  # type: ignore[attr-defined]
+    mlx_lm.models = models  # type: ignore[attr-defined]
+
     return mlx_lm
 
 
@@ -162,10 +203,12 @@ def fake_apple_fm_sdk(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
 
 @pytest.fixture(autouse=True)
 def fake_mlx_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
-    """Inject synthetic mlx_lm (and submodule) into sys.modules for every test."""
+    """Inject synthetic mlx_lm (and submodules) into sys.modules for every test."""
     import sys
 
     mlx = _make_fake_mlx_lm()
     monkeypatch.setitem(sys.modules, "mlx_lm", mlx)
     monkeypatch.setitem(sys.modules, "mlx_lm.sample_utils", mlx.sample_utils)
+    monkeypatch.setitem(sys.modules, "mlx_lm.models", mlx.models)
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", mlx.models.cache)
     return mlx

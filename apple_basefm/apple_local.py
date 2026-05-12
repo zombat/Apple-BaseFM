@@ -38,6 +38,7 @@ from typing import Any
 
 from apple_basefm._base import _AppleBaseLM
 from apple_basefm._compat import get_caller_predict, get_dspy_cache, get_send_stream
+from apple_basefm._kv import KVCacheStrategy, TurboQuantV2Cache
 from apple_basefm._mlx import (
     _apply_chat_template,
     _LocalStreamChunk,
@@ -49,6 +50,13 @@ from apple_basefm._response import _FMResponse, _FMUsage
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_BACKENDS = ("mlx", "coreml")
+
+# String preset aliases so users don't have to import the cache class directly.
+# Each value is a zero-arg factory so every call returns a fresh instance.
+_KV_PRESETS: dict[str, Any] = {
+    "turboquant-v2":      lambda: TurboQuantV2Cache(bits=4, use_rotation=True),
+    "turboquant-v2-lean": lambda: TurboQuantV2Cache(bits=4, use_rotation=False),
+}
 
 
 class AppleLocalLM(_AppleBaseLM, _MLXMixin):
@@ -101,6 +109,7 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
         max_tokens: int = 1000,
         cache: bool = True,
         max_concurrency: int = 1,
+        kv_cache: str | KVCacheStrategy | None = None,
         **kwargs: Any,
     ) -> None:
         if backend not in _SUPPORTED_BACKENDS:
@@ -167,6 +176,47 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
         # context-window warnings on every call.
         raw_ctx = getattr(self._mlx_tokenizer, "model_max_length", 4096)
         self.context_window: int = min(raw_ctx, 131_072)
+
+        # --- Resolve and validate kv_cache ---
+        if isinstance(kv_cache, str):
+            if kv_cache not in _KV_PRESETS:
+                raise ValueError(
+                    f"AppleLocalLM: unknown kv_cache preset {kv_cache!r}. "
+                    f"Valid presets: {list(_KV_PRESETS)}"
+                )
+            kv_cache = _KV_PRESETS[kv_cache]()
+
+        if kv_cache is not None and not isinstance(kv_cache, KVCacheStrategy):
+            raise TypeError(
+                f"AppleLocalLM: kv_cache must be a string preset or KVCacheStrategy "
+                f"instance, got {type(kv_cache).__name__!r}. "
+                f"Valid presets: {list(_KV_PRESETS)}"
+            )
+
+        self._kv_strategy: KVCacheStrategy | None = kv_cache
+
+        # Read head_dim and n_layers once at init — only needed when a kv_cache
+        # strategy is set. Guarded so non-standard architectures are not broken
+        # when kv_cache=None (the default).
+        self._head_dim: int | None = None
+        self._n_layers: int | None = None
+        if self._kv_strategy is not None:
+            try:
+                self._head_dim = self._mlx_model.layers[0].self_attn.head_dim
+                self._n_layers = len(self._mlx_model.layers)
+            except (AttributeError, IndexError) as exc:
+                raise RuntimeError(
+                    "AppleLocalLM: could not read head_dim / n_layers from the "
+                    "loaded model (expected model.layers[0].self_attn.head_dim). "
+                    "The model may not expose a standard transformer attention "
+                    "interface. kv_cache is not supported for this architecture."
+                ) from exc
+            logger.info(
+                "AppleLocalLM: kv_cache=%s (n_layers=%d, head_dim=%d)",
+                self._kv_strategy.describe(),
+                self._n_layers,
+                self._head_dim,
+            )
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -275,6 +325,13 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
             if cached is not None:
                 return cached
 
+        # Build a fresh KV cache for this generation pass (None = mlx-lm default).
+        kv = (
+            self._kv_strategy.build(self._n_layers, self._head_dim)
+            if self._kv_strategy is not None
+            else None
+        )
+
         if send_stream is not None:
             import mlx_lm
             from anyio.from_thread import run as _anyio_run
@@ -291,6 +348,8 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
             }
             if logits_processors:
                 stream_kwargs["logits_processors"] = logits_processors
+            if kv is not None:
+                stream_kwargs["prompt_cache"] = kv
 
             _chunks: list[str] = []
             for _response in mlx_lm.stream_generate(
@@ -307,7 +366,12 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
 
             text = "".join(_chunks)
         else:
-            text, flat_prompt = self._generate(messages, temperature, max_tokens, logits_processors)
+            _gen_kwargs: dict[str, Any] = {}
+            if kv is not None:
+                _gen_kwargs["prompt_cache"] = kv
+            text, flat_prompt = self._generate(
+                messages, temperature, max_tokens, logits_processors, **_gen_kwargs
+            )
 
         usage = self._compute_usage(flat_prompt, text, max_tokens)
         response = self._build_response(text, usage=usage)
@@ -370,9 +434,18 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
         caller_predict = get_caller_predict()
         predict_id = id(caller_predict) if caller_predict else None
 
+        kv = (
+            self._kv_strategy.build(self._n_layers, self._head_dim)
+            if self._kv_strategy is not None
+            else None
+        )
+
         full_text_parts: list[str] = []
+        _async_gen_kwargs: dict[str, Any] = {}
+        if kv is not None:
+            _async_gen_kwargs["prompt_cache"] = kv
         async for token_text in self._stream_generate_async(
-            flat_prompt, temperature, max_tokens, logits_processors
+            flat_prompt, temperature, max_tokens, logits_processors, **_async_gen_kwargs
         ):
             full_text_parts.append(token_text)
             chunk = _LocalStreamChunk(
