@@ -313,6 +313,101 @@ mypy apple_basefm/
 
 ---
 
+## Using a HuggingFace Mirror
+
+If `huggingface.co` is blocked or slow in your network, you can point every
+`huggingface_hub` call — including model downloads, `apple-basefm mlx-models`,
+`apple-basefm suggest`, and `apple-basefm remove` — at a mirror endpoint.
+
+### Setting the mirror endpoint
+
+Set the `HF_ENDPOINT` environment variable before running any command or importing the
+library.  The value must be the base URL of the mirror with no trailing slash.
+
+```bash
+# Shell (Linux / macOS)
+export HF_ENDPOINT=https://hf-mirror.com
+
+# Single command
+HF_ENDPOINT=https://hf-mirror.com apple-basefm suggest
+
+# Or in Python before any import
+import os
+os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
+import apple_basefm
+```
+
+`huggingface_hub` reads `HF_ENDPOINT` at import time, so the variable must be set before
+the library is first imported in the current process.
+
+### Downloading models through a mirror
+
+Once `HF_ENDPOINT` is set, `mlx-lm` will route all downloads through the mirror because
+it uses `huggingface_hub` internally:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+python -c "
+from apple_basefm import AppleLocalLM
+lm = AppleLocalLM('mlx-community/Llama-3.2-3B-Instruct-4bit')
+"
+```
+
+Or with `huggingface-cli` directly:
+
+```bash
+HF_ENDPOINT=https://hf-mirror.com \
+  huggingface-cli download mlx-community/Llama-3.2-3B-Instruct-4bit
+```
+
+### CLI commands
+
+All three `apple-basefm` subcommands work unmodified once `HF_ENDPOINT` is set:
+
+```bash
+export HF_ENDPOINT=https://hf-mirror.com
+
+apple-basefm mlx-models            # lists locally cached models (no network call)
+apple-basefm suggest               # queries mlx-community via the mirror endpoint
+apple-basefm suggest --offline     # skips the network call entirely; no mirror needed
+apple-basefm remove <repo_id>      # removes from local cache; no network call
+```
+
+`suggest` makes a live query to `mlx-community` on HuggingFace Hub (or the mirror). If
+the mirror is unavailable, it automatically falls back to the built-in offline catalog.
+Use `--offline` to force the offline catalog and skip the network call entirely.
+
+### Persisting the setting
+
+Add the export to your shell profile (`~/.zshrc`, `~/.bashrc`, etc.) or to a `.env` file
+loaded by your project:
+
+```bash
+# ~/.zshrc
+export HF_ENDPOINT=https://hf-mirror.com
+```
+
+Or pin it in a `pyproject.toml`-adjacent `.env` that your runner loads:
+
+```ini
+HF_ENDPOINT=https://hf-mirror.com
+```
+
+### Authentication on private or enterprise mirrors
+
+If the mirror requires a token, use `HF_TOKEN` (same variable `huggingface_hub` uses for
+`huggingface.co`):
+
+```bash
+export HF_ENDPOINT=https://my-internal-mirror.example.com
+export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
+```
+
+> **Security note**: `HF_TOKEN` is read by `huggingface_hub` and never logged or stored
+> by `apple-basefm`. Do not hardcode tokens in source files.
+
+---
+
 ## Compatibility matrix
 
 | apple-basefm | DSPy | Python | macOS (local models) | macOS (Foundation) |
@@ -335,6 +430,10 @@ This project contains code derived from [DSPy](https://github.com/stanfordnlp/ds
 Apple, Apple Intelligence, Apple Silicon, and Foundation Models are trademarks of
 Apple Inc. The `apple_fm_sdk` is proprietary Apple software, not included here, and
 must be obtained through Apple's developer channels subject to Apple's terms.
+
+[`mlx`](https://github.com/ml-explore/mlx) and
+[`mlx-lm`](https://github.com/ml-explore/mlx-lm) are optional dependencies maintained
+by Apple Inc., used under the MIT License, and not bundled with this package.
 
 This project is independent and is not affiliated with, endorsed by, or sponsored
 by Apple Inc. or Stanford University.

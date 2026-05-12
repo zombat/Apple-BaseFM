@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
-## [Unreleased]
+## [0.2.0] — 2026-05-12
 
 ### Added
+
+- **README: HuggingFace mirror guide** — documents `HF_ENDPOINT` usage for networks
+  where `huggingface.co` is blocked or slow, covering model downloads, all three
+  `apple-basefm` CLI subcommands, shell/Python configuration, and authenticated
+  enterprise mirrors.
 
 - **TurboQuant V2 KV cache backend** (`apple_basefm._kv`) — optional KV cache
   compression for `AppleLocalLM`. New `kv_cache` parameter accepts string presets
