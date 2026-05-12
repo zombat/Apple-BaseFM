@@ -44,9 +44,15 @@ def make_rotation_matrix(head_dim: int):
         ) from exc
 
     try:
-        # Fixed seed: same matrix every run — reproducibility over variety.
-        mx.random.seed(42)
-        gaussian = mx.random.normal(shape=(head_dim, head_dim))
+        # Try the keyed PRNG API (MLX ≥ 0.16 style) first; fall back to the
+        # global-seed API for older releases or test stubs that don't expose
+        # mx.random.key.
+        try:
+            key = mx.random.key(42)
+            gaussian = mx.random.normal(shape=(head_dim, head_dim), key=key)
+        except AttributeError:
+            mx.random.seed(42)
+            gaussian = mx.random.normal(shape=(head_dim, head_dim))
         t0 = time.perf_counter()
         Q, _ = mx.linalg.qr(gaussian)
         elapsed = time.perf_counter() - t0

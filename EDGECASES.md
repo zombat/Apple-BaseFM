@@ -100,7 +100,7 @@ the `kv_cache` integration in `apple_basefm/apple_local.py`
 
 | # | Edge Case | Component | Severity | Status | Action |
 |---|---|---|---|---|---|
-| R-1 | `_inner.update_and_fetch(keys, values)` raises mid-generation (e.g., MLX OOM, quantization overflow) — the inner `QuantizedKVCache` may have partially updated its state (offset incremented, buffers partially written). There is no rollback path. Subsequent calls to the same layer cache object attempt to continue from a potentially inconsistent offset | `cache_v2.py: _TurboQuantV2LayerCache.update_and_fetch()` | P1 | Should Handle | Handle in code: on `update_and_fetch()` exception, set `self._inner = None` (forcing `_ensure_inner()` to recreate a fresh inner cache on retry) rather than retaining the half-updated state; add a test that verifies recovery after a simulated update failure |
+| R-1 | `_inner.update_and_fetch(keys, values)` raises mid-generation (e.g., MLX OOM, quantization overflow) — the inner `QuantizedKVCache` may have partially updated its state (offset incremented, buffers partially written). There is no rollback path. Subsequent calls to the same layer cache object attempt to continue from a potentially inconsistent offset | `cache_v2.py: _TurboQuantV2LayerCache.update_and_fetch()` | P1 | Design Decision (2026-05-12) | **Reversed**: do NOT reset `_inner = None` on exception. Let exceptions propagate cleanly to DSPy's retry layer, which restarts generation entirely (not individual tokens). Document the contract in `update_and_fetch()` docstring. See also R-1 in the "Five Fixes" section below. |
 
 ---
 
@@ -346,3 +346,197 @@ the `kv_cache` integration in `apple_basefm/apple_local.py`
 - **S-2 (concurrent remove)**: CLI tool; simultaneous invocations are a user error. `delete_revisions()` is idempotent on already-deleted files.
 - **F-1 (no list_models timeout)**: `huggingface_hub` does not expose a `requests` timeout on `list_models`. The OS-level socket timeout (typically 30–120 s) fires eventually and the outer `except Exception` falls back to offline. Document `--offline` for low-bandwidth use.
 - **F-2 / R-2 (partial delete on error/interrupt)**: `DeleteCacheStrategy.execute()` does not guarantee atomicity. The HF cache format tolerates partial deletes (remaining blobs are valid). Directing users to `huggingface-cli cache delete` for manual recovery is sufficient.
+
+---
+
+# Edge Cases: Five TurboQuant V2 Fixes (Planning Session 2026-05-12)
+
+**Date**: 2026-05-12
+**Scope**: `rotation.py` keyed RNG, `cache_v2.py` exception propagation reversal, `apple_local.py` `_KV_PRESETS` differentiation, `_catalog.py` `gpt-oss-20b` entry, `apple_basefm/_kv/attention_v2.py` stub.
+**Status**: Review Ready
+
+---
+
+## Summary
+
+| Category | Total | P0 | P1 | P2 | OOS |
+|---|---|---|---|---|---|
+| Input & Boundaries | 1 | 0 | 0 | 1 | 0 |
+| State & Concurrency | 0 | 0 | 0 | 0 | 0 |
+| Data Shape | 0 | 0 | 0 | 0 | 0 |
+| Failure Paths | 0 | 0 | 0 | 0 | 0 |
+| Authorization | 0 | 0 | 0 | 0 | 0 |
+| Performance Limits | 0 | 0 | 0 | 0 | 0 |
+| Configuration & Environment | 3 | 0 | 2 | 1 | 0 |
+| Deployment Lifecycle | 0 | 0 | 0 | 0 | 0 |
+| Runtime Execution Lifecycle | 1 | 0 | 1 | 0 | 0 |
+| **Total** | **5** | **0** | **3** | **2** | **0** |
+
+---
+
+## Candidates
+
+### Input & Boundaries
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| I-1 | `min_ram_gb=14` for `gpt-oss-20b` is non-standard — Apple Silicon ships in 8/16/24/36/48/96/128 GB increments only. The `>=` filter makes 14 functionally identical to 16 in practice, but it is inconsistent with the tier structure and will confuse future catalog maintainers | `_catalog.py: _OFFLINE_CATALOG` | P2 | Should Handle | Use `min_ram_gb=16` to align with the 16 GB RAM tier comment and existing catalog conventions |
+
+---
+
+### Configuration & Environment
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| C-1 | **MLX keyed RNG API mismatch**: The proposed fix uses `mx.random.normal(shape=..., key=key)`, but MLX 0.22's `random.normal` signature is `(shape, dtype, loc, scale, *, stream=None)` — there is no `key=` parameter. Passing `key=key` raises `TypeError: normal() got an unexpected keyword argument 'key'` at the first rotation matrix generation, breaking all `use_rotation=True` calls. The correct MLX pattern is either `mx.random.split(key)` + `stream=`, or using the global-seed call in a side-effect-isolated way | `rotation.py: make_rotation_matrix()` | P1 | **Resolved** | Verified against MLX docs: `mx.random.normal` accepts `key=` as of MLX 0.22 (JAX-style keyed API). Fix implemented as planned. |
+| C-2 | **Silent `turboquant-v2` semantic change**: when `attention_v2.py` ships, the intent is to flip `_KV_PRESETS["turboquant-v2"]` to `use_rotation=True`. This is a silent behavior change — no version bump, no deprecation warning, no signal to users who pinned `"turboquant-v2"` expecting LEAN behavior. Users relying on the preset string for reproducible attention output will silently get rotated scores. `"turboquant-v2-lean"` is the stable alias, but only users who read the comments will know to use it | `apple_local.py: _KV_PRESETS` | P1 | Should Handle | When `attention_v2.py` ships: (1) emit a one-time `logger.warning` in `_KV_PRESETS["turboquant-v2"]`'s factory stating the preset now uses rotation; (2) add a CHANGELOG entry; (3) consider a minor version bump. Document this intent in the preset comment now so it is not forgotten. |
+| C-3 | **`attention_v2.py` module-level `raise` poisons `_kv` on accidental import**: the stub's top-level `raise NotImplementedError(...)` fires at import time. If a future developer adds `from . import attention_v2` or `from .attention_v2 import ...` to `_kv/__init__.py`, the entire `apple_basefm._kv` package becomes un-importable, breaking all KV cache users with an opaque `NotImplementedError` | `apple_basefm/_kv/__init__.py` | P2 | Should Handle | Add an explicit comment to `_kv/__init__.py`: `# attention_v2 is intentionally NOT imported here — it raises NotImplementedError at module level` so the exclusion is self-documenting and future-proof |
+
+---
+
+### Runtime Execution Lifecycle
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| R-1 | **Exception propagation contract**: removing the `try/except` reset means a mid-generation exception leaves `_inner` (the `QuantizedKVCache`) with a partially-updated state (offset incremented, buffers partially written). If any caller above `mlx_lm.generate()` catches the exception and retries a single token rather than restarting generation from scratch, the next `update_and_fetch` call will operate on a misaligned buffer and silently produce wrong outputs. The design assumption is that exceptions propagate to DSPy's retry logic, which restarts the full LM call (reconstructing the KV cache entirely). This assumption is correct for DSPy's `Predict`/`ChainOfThought` retry paths but should be explicit | `cache_v2.py: _TurboQuantV2LayerCache.update_and_fetch()` | P1 | Design Decision | Document the contract in the `update_and_fetch()` docstring: *"On exception, the inner cache may be in a partially-updated state. Callers must not retry a single token — restart generation entirely to get a clean cache."* Add a note that `mlx_lm.generate()` does not catch individual token errors and therefore always propagates to the DSPy retry layer. |
+
+---
+
+## Decisions
+
+- **I-1 (`min_ram_gb=14`)**: Should be changed to 16 before shipping. There is no Apple Silicon configuration with exactly 14 GB. Using 14 is not a correctness bug (the filter still works) but it creates a maintenance trap.
+- **C-1 (MLX `key=` API)**: Must be verified against the `mlx>=0.22.0` minimum. If `mx.random.normal` does not accept `key=`, the proposed fix syntax is wrong and will break rotation entirely. Verify before implementing.
+- **C-2 (`turboquant-v2` semantic change)**: The preset is correctly documented now (`use_rotation=False` until `attention_v2.py` ships). The risk is at the flip point — that future change needs a changelog entry and a runtime warning.
+- **C-3 (`attention_v2.py` import guard)**: A one-line comment in `__init__.py` is sufficient. The stub's module-level raise is intentional; the guard is documentation, not code.
+- **R-1 (exception propagation)**: The design decision to propagate rather than reset is correct for DSPy's retry model. The contract just needs to be stated explicitly in the docstring.
+
+---
+
+# Edge Cases: `download` Subcommand
+
+**Date**: 2026-05-12
+**Scope**: Planned `apple-basefm download REPO_ID [--revision REV] [--dry-run] [--yes]` CLI subcommand. No implementation exists yet — this sweep targets the design spec in README.md and the governance review in GOVERNANCE.md.
+**Status**: Review Ready
+
+---
+
+## Summary
+
+| Category | Total | P0 | P1 | P2 | OOS |
+|---|---|---|---|---|---|
+| Input & Boundaries | 6 | 0 | 2 | 4 | 0 |
+| State & Concurrency | 2 | 0 | 0 | 2 | 0 |
+| Data Shape | 3 | 0 | 0 | 3 | 0 |
+| Failure Paths | 7 | 0 | 4 | 2 | 1 |
+| Authorization | 2 | 0 | 1 | 1 | 0 |
+| Performance Limits | 2 | 0 | 0 | 2 | 0 |
+| Configuration & Environment | 3 | 0 | 2 | 1 | 0 |
+| Deployment Lifecycle | 2 | 0 | 1 | 1 | 0 |
+| Runtime Execution Lifecycle | 3 | 0 | 1 | 2 | 0 |
+| **Total** | **30** | **0** | **11** | **18** | **1** |
+
+---
+
+## Candidates
+
+### Input & Boundaries
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| I-1 | `REPO_ID` is an empty string `""` — argparse accepts it as a valid positional arg; `repo_info("")` sends a malformed Hub request returning an opaque 404 or `RepositoryNotFoundError` with a message that doesn't identify the empty string as the problem | `_cmd_download` (argparse) | P1 | Must Handle | Handle in code: validate `len(repo_id.strip()) > 0` immediately after argparse; exit with `"error: REPO_ID must not be empty"` |
+| I-2 | `REPO_ID` missing the `/` separator (e.g. `llama`, `llama3`) — argparse accepts it; Hub returns a confusing "repository not found" error without explaining the format requirement | `_cmd_download` (argparse) | P1 | Must Handle | Handle in code: validate `owner/repo` format with `re.fullmatch(r"[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+", repo_id.strip())`; exit with `"error: REPO_ID must be in owner/repo format (e.g. mlx-community/Llama-3.2-3B-Instruct-4bit)"` |
+| I-3 | `REPO_ID` containing path traversal characters (`../`, `%2F`, `\`) — the Hub API will reject these, but a poorly-implemented `local_dir=` path derived from REPO_ID could escape the target directory | `_cmd_download` | P2 | Deferred | The format validation (I-2) rejects `..` implicitly (`[a-zA-Z0-9._-]+` does not allow `/`). No `local_dir=` usage planned (using default HF cache). Revisit if `local_dir=` is ever added. |
+| I-4 | `--revision` is an empty string `""` — `snapshot_download(revision="")` behaviour is Hub-library-version-dependent: some versions treat it as `"main"`, others raise `ValueError` | `_cmd_download` | P2 | Should Handle | Normalize: if `args.revision` is `""` or `None`, pass `revision=None` (Hub default of `main`); document in `--help` |
+| I-5 | `--revision` is a string of 1000+ characters — Hub API will reject it, but the error message may expose the full string back to the user in a confusing way | `_cmd_download` | P2 | Deferred | Hub validation is sufficient; no local length cap needed |
+| I-6 | `REPO_ID` with leading/trailing whitespace (e.g. `" mlx-community/Llama "`) — argparse does not strip whitespace; `repo_info(" mlx-community/...")` returns a 404 | `_cmd_download` | P2 | Should Handle | Strip `.strip()` before the format validation; whitespace in a repo ID is always user error |
+
+---
+
+### State & Concurrency
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| S-1 | Two concurrent `download` invocations for the same `REPO_ID` — `snapshot_download()` internally uses atomic symlinks and is safe for concurrent access; both calls complete successfully (second may short-circuit when it finds blobs already present) | `_cmd_download` | P2 | Already Handled | `huggingface_hub` concurrency model is safe; no action |
+| S-2 | `Ctrl-C` (`SIGINT`) during `snapshot_download()` — partial blobs are left in `~/.cache/huggingface/hub/tmp*`; `resume_download=True` ensures the next invocation resumes rather than re-downloading | `_cmd_download` | P2 | Already Handled | `resume_download=True` specified in design. Document in README that interrupted downloads are resumable by re-running the command. |
+
+---
+
+### Data Shape
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| D-1 | `repo_info().siblings` is an empty list (zero-file repo or non-dataset/model hub entry) — `sum(s.size for s in siblings if s.size)` returns 0; disk preflight reports "0 GB required" and passes trivially, misleading the user | `_cmd_download` (preflight) | P2 | Should Handle | When calculated disk estimate is 0 and no catalog entry matches, skip the preflight and print `"info: could not determine model size; skipping disk check"` rather than reporting "0 GB" |
+| D-2 | `repo_info().siblings[n].size` is `None` for LFS pointer files — the `if s.size` filter in the estimation expression handles this, but it increases the chance of a 0-estimate (D-1) | `_cmd_download` (preflight) | P2 | Already Handled | Covered by D-1 fallback |
+| D-3 | `snapshot_download()` returns a `str` (not `Path`) — consistent across all `huggingface_hub` versions; `print(path)` works correctly either way | `_cmd_download` | P2 | Already Handled | No action |
+
+---
+
+### Failure Paths
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| F-1 | `repo_info()` raises `RepositoryNotFoundError` — model doesn't exist, name is misspelled, or repo is private and no token is set | `_cmd_download` (preflight) | P1 | Must Handle | Handle in code: catch `RepositoryNotFoundError`; print `"error: Model not found: {repo_id}\n  - Check the repo ID for typos\n  - If the model is private, run: huggingface-cli login"`; `sys.exit(1)` |
+| F-2 | `repo_info()` raises `GatedRepoError` — model requires accepting a license agreement on the Hub (e.g. Llama 3) | `_cmd_download` (preflight) | P1 | Must Handle | Handle in code: catch `GatedRepoError`; print `"error: Access denied: {repo_id} requires license agreement.\n  Visit: https://huggingface.co/{repo_id} to accept."`; `sys.exit(1)` |
+| F-3 | Disk space check passes but `snapshot_download()` raises `OSError: [Errno 28] No space left on device` mid-download — disk fills up between preflight and download start (or estimate was inaccurate) | `_cmd_download` | P1 | Must Handle | Handle in code: wrap `snapshot_download()` in `try/except OSError as e: if e.errno == errno.ENOSPC`; print `"error: Ran out of disk space during download. Free up space and re-run to resume."`; `sys.exit(1)` |
+| F-4 | `repo_info()` or `snapshot_download()` raises a connection error or timeout — network is unavailable or `HF_ENDPOINT` is unreachable | `_cmd_download` | P1 | Must Handle | Handle in code: catch `requests.exceptions.ConnectionError` and `requests.exceptions.Timeout` (imported from `huggingface_hub`'s re-exports or `requests`); print `"error: Network error. Check your connection or set HF_ENDPOINT to a reachable mirror."`; `sys.exit(1)` |
+| F-5 | `huggingface_hub` not installed — `_require_hf_hub()` already raises `RuntimeError` with install instructions | `_cmd_download` | — | Already Handled | `_require_hf_hub()` guard at function entry; same pattern as `remove` and `suggest` |
+| F-6 | `detect_hardware()` raises during disk space preflight — unlikely, but would crash `_cmd_download` before the download begins | `_cmd_download` (preflight) | P2 | Should Handle | Wrap `detect_hardware()` in `try/except Exception`; if it raises, skip the disk check with `logger.warning("Could not determine free disk space; skipping preflight")` and proceed |
+| F-7 | `snapshot_download()` raises `HfHubHTTPError` with status 500 from Hub (transient server error) — user sees a raw traceback | `_cmd_download` | P2 | Should Handle | Catch `HfHubHTTPError`; print `"error: Hub returned an error ({status_code}). Try again shortly."`; `sys.exit(1)` |
+
+---
+
+### Authorization
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| A-1 | `HF_TOKEN` not set and model is private — Hub returns 404 (not 401) for private repos to unauthenticated users; surfaces as `RepositoryNotFoundError` (same as F-1 above) | `_cmd_download` (preflight) | P1 | Must Handle | Covered by F-1 handler — the hint to run `huggingface-cli login` is the correct recovery action regardless of whether the 404 is a typo or a missing token |
+| A-2 | `HF_TOKEN` is expired or revoked — Hub returns 401 wrapped in `HfHubHTTPError`; user sees raw exception if not handled | `_cmd_download` | P2 | Should Handle | Covered by F-7 handler (`HfHubHTTPError` catch); add a specific check for status 401 with message `"error: HF_TOKEN is invalid or expired. Run: huggingface-cli login"` |
+
+---
+
+### Performance Limits
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| P-1 | Very large model (e.g. Llama 3.1 405B quantized, ~200 GB) — `snapshot_download()` runs for potentially hours; `huggingface_hub` provides built-in tqdm progress; no action needed from `_cmd_download` | `_cmd_download` | P2 | Already Handled | HF Hub's tqdm covers progress. Document in README that large downloads are resumable. |
+| P-2 | `--dry-run` calls `repo_info()` to estimate disk size — this is a live Hub API call that can take 1–3 seconds even on a good connection; user may expect `--dry-run` to be instantaneous | `_cmd_download` | P2 | Deferred | Acceptable: `--dry-run` exists to prevent wasted bandwidth/disk, not to be zero-latency. If only the catalog is checked (without `repo_info()`), the estimate may be unavailable for non-catalog models. Use `repo_info()` and accept the latency. |
+
+---
+
+### Configuration & Environment
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| C-1 | `HF_HUB_CACHE` set to a non-writable path — `snapshot_download()` raises `PermissionError` before downloading any files | `_cmd_download` | P1 | Must Handle | Handle in code: catch `PermissionError`; print `"error: HuggingFace cache directory is not writable: {_cache_path_str()}\n  Set HF_HUB_CACHE to a writable path."`; `sys.exit(1)` |
+| C-2 | `HF_ENDPOINT` set to an unreachable or malformed mirror URL — `repo_info()` raises `ConnectionError` or `ValueError`; covered by F-4 handler | `_cmd_download` | P1 | Must Handle | Covered by F-4. Add `ValueError` to the caught exceptions for malformed URLs. |
+| C-3 | `HOME` not set (some Docker / CI environments) — `_cache_path_str()` uses `Path.home()` which raises `RuntimeError`; same issue already documented for `list_mlx_models` (Section 2, C-1) | `_cmd_download`, `_cache_path_str()` | P2 | Should Handle | The existing `except Exception` in `_cache_path_str()` returns `"(unknown)"`; consistent with rest of CLI. No new action needed. |
+
+---
+
+### Deployment Lifecycle
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| DL-1 | `download` run for an already-cached model at the same revision — `snapshot_download()` is idempotent and returns the existing cache path immediately, but the command prints no output; user is left wondering if the command ran successfully or did nothing | `_cmd_download` | P1 | Must Handle | Handle in code: before calling `snapshot_download()`, check `scan_cache_dir()` for an existing entry at the same revision; if found, print `"Already cached: {path}"` and exit 0 without re-downloading |
+| DL-2 | `snapshot_download()` atomically commits downloaded blobs via symlinks — if the process is killed mid-operation, the partial `blobs/` directory exists but is not yet linked under `snapshots/`; `resume_download=True` recovers on next run | `_cmd_download` | P2 | Already Handled | `resume_download=True` in design spec. Document in README. |
+
+---
+
+### Runtime Execution Lifecycle
+
+| # | Edge Case | Component | Severity | Status | Action |
+|---|---|---|---|---|---|
+| R-1 | Pre-download confirmation prompt (`"Download X GB? [y/N]"`) — must handle `EOFError` (non-interactive stdin, CI) and `KeyboardInterrupt` (`Ctrl-C`) cleanly, same as `_cmd_remove()` | `_cmd_download` | P1 | Must Handle | Handle in code: wrap `input()` in `try/except (EOFError, KeyboardInterrupt)`; print `"\nAborted."` to stderr; `sys.exit(1)`. Use the same pattern as `_cmd_remove()`. |
+| R-2 | `snapshot_download()` is synchronous blocking I/O — if `_cmd_download` is ever wrapped in an async context, it will block the event loop | `_cmd_download` | P2 | Deferred | CLI-only usage; no async context exists. Note in function docstring: "synchronous; not safe to call from an event loop without `asyncio.to_thread()`". |
+| R-3 | tqdm progress bar from Hub writes ANSI escape sequences to stderr — when stderr is redirected to a log file, ANSI codes appear in the log | `_cmd_download` | P2 | Already Handled | `huggingface_hub` disables tqdm automatically when not a TTY (`sys.stderr.isatty() == False`). No action. |
+
+---
+
+## Decisions
+
+- **I-2 (format validation)**: `re.fullmatch(r"[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+", ...)` is required as a pre-condition before any Hub API call. The GOVERNANCE review independently flagged this as required. The regex also covers I-3 (path traversal) implicitly since `..` and `/` in the path component are rejected.
+- **I-4 (`--revision ""`)**:  Normalise to `None` rather than validating. Passing an empty string to the Hub is ambiguous; `None` gets the default branch deterministically.
+- **S-2 (SIGINT resume)**: `resume_download=True` is already in the design spec. Verify it is passed to every `snapshot_download()` call site.
+- **D-1 (0 GB estimate)**: Print "could not determine size; skipping disk check" rather than "0 GB required" to avoid misleading users with a trivially-passing preflight that provides no safety.
+- **F-1 + A-1 convergence**: `RepositoryNotFoundError` is the Hub's signal for both "doesn't exist" and "private, no token". A single handler with both hints (typo check + login hint) covers both cases without needing to distinguish them.
+- **DL-1 (already cached)**: Checking `scan_cache_dir()` before calling `snapshot_download()` adds a small overhead but prevents silent no-ops that users misread as failures. Worth the latency.

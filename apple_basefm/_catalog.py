@@ -124,6 +124,15 @@ _OFFLINE_CATALOG: list[ModelEntry] = [
     _entry("mlx-community/Mistral-Nemo-Instruct-2407-4bit", 4,  7.0, 10,  1, "Mistral 12B, long context"),
     _entry("mlx-community/Phi-4-4bit",                      4,  8.4, 10,  1, "Microsoft 14B, top reasoning"),
     _entry("mlx-community/Qwen2.5-14B-Instruct-4bit",       4,  8.4, 12,  1, "Alibaba 14B"),
+    # NOTE: gpt-oss-20b — disk_gb=11.0 is the MLX Q4 weight footprint. min_ram_gb=16
+    # reflects real-world Apple Silicon needs (weights + KV cache + activation buffers);
+    # the 12 GB OpenAI quotes is weights-only and causes paging on M4 Air at 16 GB.
+    # When the download subcommand lands: use catalog disk_gb (11.0) for the preflight
+    # disk-space check rather than inferring from Hub metadata — the Hub repo size for
+    # gpt-oss variants varies by revision and can be misleading.
+    # The mlx-community repo is the correct target for AppleLocalLM; MXFP4 native
+    # weights live on a separate repo with different performance characteristics.
+    _entry("mlx-community/gpt-oss-20b-4bit",                4, 11.0, 16,  1, "OpenAI 20B MoE, o3-mini quality, reasoning effort configurable"),
     # ── 32 GB RAM tier ───────────────────────────────────────────────────────
     _entry("mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit", 4, 13.0, 16, 1, "Mistral 24B, strong all-rounder"),
     _entry("mlx-community/Qwen2.5-32B-Instruct-4bit",       4, 18.0, 24,  1, "Alibaba 32B, near-frontier quality"),

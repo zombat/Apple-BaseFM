@@ -384,6 +384,203 @@ def _cmd_remove(args: object) -> None:
 
 
 # ---------------------------------------------------------------------------
+# download helpers
+# ---------------------------------------------------------------------------
+
+import errno
+import re
+
+_REPO_ID_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
+
+
+def _validate_repo_id(repo_id: str) -> str:
+    """Return stripped, normalised repo_id or raise ValueError."""
+    repo_id = repo_id.strip()
+    if not repo_id:
+        raise ValueError(
+            "REPO_ID must not be empty. "
+            "Expected format: owner/model-name (e.g. mlx-community/Llama-3.2-3B-Instruct-4bit)"
+        )
+    if not _REPO_ID_RE.match(repo_id):
+        raise ValueError(
+            f"Invalid REPO_ID {repo_id!r}. "
+            "Expected format: owner/model-name using only letters, digits, dots, hyphens, and underscores. "
+            "Short names without a '/' are not accepted — paste the full repo ID from 'apple-basefm suggest'."
+        )
+    return repo_id
+
+
+def _catalog_disk_gb(repo_id: str) -> float | None:
+    """Return the offline catalog disk_gb for *repo_id* (lowercased), or None."""
+    try:
+        from apple_basefm._catalog import _OFFLINE_CATALOG  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    lower = repo_id.lower()
+    for entry in _OFFLINE_CATALOG:
+        if entry["repo_id"].lower() == lower:
+            return entry["disk_gb"]
+    return None
+
+
+def _hub_size_gb(info: object) -> float | None:
+    """Sum Hub sibling sizes (bytes) and convert to GB. Returns None if no sizes."""
+    try:
+        siblings = getattr(info, "siblings", None) or []
+        total = sum(s.size for s in siblings if getattr(s, "size", None))
+        return total / 1e9 if total else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _cmd_download(args: object) -> None:
+    _require_hf_hub()
+
+    from huggingface_hub import repo_info as hf_repo_info  # noqa: PLC0415
+    from huggingface_hub import snapshot_download  # noqa: PLC0415
+
+    try:
+        from huggingface_hub.errors import GatedRepoError, RepositoryNotFoundError  # noqa: PLC0415
+    except ImportError:
+        # Older versions of huggingface_hub stored these under huggingface_hub.utils
+        from huggingface_hub.utils import GatedRepoError, RepositoryNotFoundError  # type: ignore[no-redef]  # noqa: PLC0415
+
+    raw_repo_id: str = getattr(args, "repo_id", "")
+    revision: str = getattr(args, "revision", "main") or ""
+    dry_run: bool = getattr(args, "dry_run", False)
+    yes: bool = getattr(args, "yes", False)
+
+    # ── Input validation ────────────────────────────────────────────────────
+    try:
+        repo_id = _validate_repo_id(raw_repo_id)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    revision = revision.strip() or "main"
+
+    # ── Preflight: repo exists ───────────────────────────────────────────────
+    try:
+        info = hf_repo_info(repo_id)
+    except RepositoryNotFoundError:
+        print(
+            f"error: Model not found: {repo_id}\n"
+            "  - Check the repo ID for typos\n"
+            "  - If the model is private, run: huggingface-cli login",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except GatedRepoError:
+        print(
+            f"error: Access denied: {repo_id} requires accepting a license agreement.\n"
+            f"  Visit https://huggingface.co/{repo_id} to accept, then re-run.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except (ConnectionError, TimeoutError, OSError) as exc:
+        print(
+            f"error: Network error reaching HuggingFace Hub: {exc}\n"
+            "  Check your connection or set HF_ENDPOINT to a reachable mirror.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except ValueError as exc:
+        print(
+            f"error: Could not reach HuggingFace Hub (invalid endpoint?): {exc}\n"
+            "  Check the value of HF_ENDPOINT.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    # ── Disk size estimate ──────────────────────────────────────────────────
+    disk_gb: float | None = _catalog_disk_gb(repo_id)
+    if disk_gb is None:
+        disk_gb = _hub_size_gb(info)
+
+    if dry_run:
+        size_str = f"{disk_gb:.1f} GB" if disk_gb else "size unknown"
+        print(f"Dry run: {repo_id}  ({size_str}, revision={revision})")
+        return
+
+    # ── Preflight: already cached? ──────────────────────────────────────────
+    try:
+        cache_info = scan_cache_dir()
+        lower = repo_id.lower()
+        for cached_repo in cache_info.repos:
+            if cached_repo.repo_id.lower() == lower:
+                print(f"Already cached: {cached_repo.repo_path}")
+                return
+    except Exception:  # noqa: BLE001
+        pass  # non-fatal; proceed to download
+
+    # ── Preflight: disk space ───────────────────────────────────────────────
+    if disk_gb and disk_gb > 0:
+        try:
+            from apple_basefm._hardware import detect_hardware  # noqa: PLC0415
+            hw = detect_hardware()
+            free = hw.free_disk_gb
+        except Exception:  # noqa: BLE001
+            free = None
+
+        if free is not None and free < disk_gb:
+            print(
+                f"error: Not enough disk space. "
+                f"Model requires ~{disk_gb:.1f} GB; {free:.1f} GB free.\n"
+                f"  Free up space and re-run — interrupted downloads are resumable.",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+
+    # ── Confirmation prompt ─────────────────────────────────────────────────
+    size_str = f"{disk_gb:.1f} GB" if disk_gb else "size unknown"
+    print(f"\n  {repo_id}  ({size_str}, revision={revision})")
+
+    if not yes:
+        try:
+            answer = input("Continue? [y/N] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\nAborted.", file=sys.stderr)
+            sys.exit(1)
+        if answer not in ("y", "yes"):
+            print("Aborted.")
+            return
+
+    # ── Download ────────────────────────────────────────────────────────────
+    try:
+        local_path = snapshot_download(
+            repo_id,
+            revision=revision,
+            resume_download=True,
+        )
+    except (ConnectionError, TimeoutError) as exc:
+        print(
+            f"error: Network error during download: {exc}\n"
+            "  Check your connection or set HF_ENDPOINT to a reachable mirror.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except PermissionError as exc:
+        print(
+            f"error: Permission denied writing to the HuggingFace cache.\n"
+            f"  Set HF_HUB_CACHE to a writable path (currently: {_cache_path_str()}).",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    except OSError as exc:
+        if exc.errno == errno.ENOSPC:
+            print(
+                "error: Ran out of disk space during download.\n"
+                "  Free up space and re-run to resume.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"error: {exc}", file=sys.stderr)
+        sys.exit(1)
+
+    print(local_path)
+
+
+# ---------------------------------------------------------------------------
 # Main entry point
 # ---------------------------------------------------------------------------
 
@@ -456,6 +653,43 @@ def main(argv: list[str] | None = None) -> None:
     p_remove.add_argument("--yes", "-y", action="store_true", default=False,
                           help="Skip the confirmation prompt.")
 
+    # ── download ─────────────────────────────────────────────────────────────
+    p_download = sub.add_parser(
+        "download",
+        help="Download an MLX model from HuggingFace Hub.",
+        description=(
+            "Downloads a model from HuggingFace Hub into the local cache.\n\n"
+            "Runs two preflight checks before downloading:\n"
+            "  1. Confirms the repo exists on the Hub.\n"
+            "  2. Compares estimated size against free disk space.\n\n"
+            "Interrupted downloads are resumable by re-running the same command."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_download.add_argument(
+        "repo_id",
+        metavar="REPO_ID",
+        help="HuggingFace repo ID, e.g. mlx-community/Llama-3.2-3B-Instruct-4bit",
+    )
+    p_download.add_argument(
+        "--revision",
+        metavar="REV",
+        default="main",
+        help="Commit hash, tag, or branch (default: main).",
+    )
+    p_download.add_argument(
+        "--dry-run",
+        action="store_true",
+        default=False,
+        help="Print repo ID and estimated size; do not download.",
+    )
+    p_download.add_argument(
+        "--yes", "-y",
+        action="store_true",
+        default=False,
+        help="Skip the disk-space confirmation prompt.",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "mlx-models":
@@ -464,3 +698,5 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_suggest(args)
     elif args.command == "remove":
         _cmd_remove(args)
+    elif args.command == "download":
+        _cmd_download(args)

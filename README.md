@@ -4,6 +4,8 @@ Apple Silicon and Apple Intelligence language model backends for [DSPy](https://
 
 Extracted from [DSPy PR #9473](https://github.com/stanfordnlp/dspy/pull/9473) into a standalone PyPI package.
 
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20A%20Coffee-support-yellow?logo=buy-me-a-coffee)](https://buymeacoffee.com/raymondandrewrizzo)
+
 ---
 
 ## What's included
@@ -294,6 +296,50 @@ memory bandwidth and throughput degrades. With TurboQuant that pressure is 3.6×
 | DSPy optimizer loops (long prompts, 4K+ context) | mlx-lm + TurboQuant V2 | KV cache compression prevents memory pressure from degrading speed as context grows |
 | Two models loaded simultaneously | mlx-lm + TurboQuant V2 | 3.6× KV compression frees headroom for the second model's weights |
 | MoE models (Qwen3, Mixtral) | mlx-lm (raw or TurboQuant) | MLX handles MoE routing ~2–3× faster than llama.cpp |
+
+---
+
+## CLI: download
+
+Download an MLX model from HuggingFace Hub into the local cache.
+
+```
+apple-basefm download REPO_ID [--revision REV] [--dry-run] [--yes]
+```
+
+| Argument | Default | Description |
+|---|---|---|
+| `REPO_ID` | _(required)_ | HuggingFace repo ID, e.g. `mlx-community/Llama-3.2-3B-Instruct-4bit` |
+| `--revision` | `main` | Commit hash, tag, or branch to pin. Use a commit hash for DSPy reproducibility. |
+| `--dry-run` | off | Print repo ID and estimated size; do not download. |
+| `--yes` | off | Skip the disk-space confirmation prompt (same as `remove`). |
+
+The command prints the final local cache path on success.
+
+### Typical workflow
+
+```bash
+# 1. Find a model
+apple-basefm suggest
+
+# 2. Download it (paste the REPO ID from suggest output)
+apple-basefm download mlx-community/Llama-3.2-3B-Instruct-4bit
+
+# 3. Pin a specific revision for reproducibility
+apple-basefm download mlx-community/Llama-3.2-3B-Instruct-4bit --revision a1b2c3d
+
+# 4. Check disk impact before committing
+apple-basefm download mlx-community/Llama-3.3-70B-Instruct-4bit --dry-run
+```
+
+### Implementation notes (for contributors)
+
+- **Download**: uses `huggingface_hub.snapshot_download(repo_id, revision=..., resume_download=True)`. The hub library handles resumable downloads and emits built-in tqdm progress — no extra dependency needed.
+- **Preflight checks** (run before download starts):
+  1. `repo_info(repo_id)` — confirms the repo exists on the Hub; surfaces a clear error for typos or private repos.
+  2. Disk space — compares estimated model size against `_hardware.detect_hardware().free_disk_gb`. The estimated size comes from the offline catalog `disk_gb` value when the repo ID matches a catalog entry; otherwise from Hub metadata. For `gpt-oss-20b` variants, always use the catalog value (`11.0 GB`) — Hub metadata varies by revision and can be misleading.
+- **Input**: strict HuggingFace repo IDs only (v1). Short name aliases (`llama-3.2-3b`) are deferred; they add discoverability but create a maintenance burden when model names change.
+- **local_dir_use_symlinks**: pass `local_dir_use_symlinks=False` when using `hf_hub_download` to avoid symlink issues on some filesystems. `snapshot_download` handles this internally.
 
 ---
 

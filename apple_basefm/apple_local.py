@@ -54,13 +54,25 @@ _SUPPORTED_BACKENDS = ("mlx", "coreml")
 # String preset aliases so users don't have to import the cache class directly.
 # Each value is a zero-arg factory so every call returns a fresh instance.
 #
+# "turboquant-v2"      — tracks "best available" over time. Currently LEAN
+#                        (use_rotation=False). When attention_v2.py ships,
+#                        this preset will be updated to use_rotation=True to
+#                        enable full rotation benefit. Users who want stable,
+#                        reproducible LEAN behaviour should pin
+#                        "turboquant-v2-lean" instead.
+#
+# "turboquant-v2-lean" — permanent stable alias: always use_rotation=False.
+#                        Safe for production and strict numerical equivalence
+#                        to standard mlx-lm --kv-bits output.
+#
 # NOTE: both presets use use_rotation=False (LEAN mode) until the compensating
 # SDPA patch (attention_v2.py) ships. Rotation reduces quantization error but
 # causes attention scores to be computed in rotated K/V space, which is not
 # numerically equivalent to standard mlx-lm --kv-bits output.
 _KV_PRESETS: dict[str, Any] = {
-    "turboquant-v2":      lambda: TurboQuantV2Cache(bits=4, use_rotation=False),
-    "turboquant-v2-lean": lambda: TurboQuantV2Cache(bits=4, use_rotation=False),
+    "turboquant-v2":      lambda: TurboQuantV2Cache(bits=4, use_rotation=False),  # → True when attention_v2.py ships
+    "turboquant-v2-lean": lambda: TurboQuantV2Cache(bits=4, use_rotation=False),  # permanent LEAN alias
+    "turboquant-v2-3bit": lambda: TurboQuantV2Cache(bits=3, use_rotation=False),
 }
 
 

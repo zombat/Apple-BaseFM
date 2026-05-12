@@ -226,6 +226,13 @@ class _TurboQuantV2LayerCache:
         in attention_v2.py (deferred). Without it, scores are computed in
         rotated space, which reduces quantization error but is not lossless.
 
+        Exception contract: if this method raises, the inner QuantizedKVCache
+        may have partially updated its state (offset incremented, buffers
+        partially written). Callers must NOT retry a single token — restart
+        generation entirely to get a clean cache. mlx_lm.generate() propagates
+        token-level exceptions without retry, so they surface at the DSPy layer
+        which restarts the full LM call and reconstructs all caches.
+
         Args:
             keys: Key tensor for the current step (from the model).
             values: Value tensor for the current step (from the model).
@@ -255,13 +262,12 @@ class _TurboQuantV2LayerCache:
                     f"inference time differs from head_dim used in build(). "
                     f"Re-construct TurboQuantV2Cache if the model was reloaded."
                 ) from exc
-        try:
-            return self._inner.update_and_fetch(keys, values)
-        except Exception:
-            # Reset the inner cache so the next call gets a clean state rather
-            # than retrying against a half-updated buffer.
-            self._inner = None
-            raise
+        # Let exceptions propagate — do not reset _inner. A partial-state
+        # inner cache must not be silently restarted mid-generation, as the
+        # caller above (mlx_lm.generate) would continue from a blank cache
+        # producing garbage output. Instead, let the exception reach DSPy's
+        # retry layer which restarts generation entirely (see docstring).
+        return self._inner.update_and_fetch(keys, values)
 
     @property
     def state(self):

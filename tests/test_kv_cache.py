@@ -40,7 +40,14 @@ def _make_fake_mlx_core() -> types.ModuleType:
     # --- mlx.core.random ---
     mx_random = types.ModuleType("mlx.core.random")
     mx_random.seed = lambda seed: np.random.seed(seed)  # seed numpy rng for determinism
-    mx_random.normal = lambda shape=None, **kwargs: np.random.randn(*shape)
+    mx_random.key = lambda seed: seed  # returns the seed int as a dummy key object
+    def _normal_keyed(shape=None, key=None, **kwargs):
+        """Deterministic if key is provided; uses global numpy rng otherwise."""
+        if key is not None:
+            rng = np.random.RandomState(key)
+            return rng.randn(*shape)
+        return np.random.randn(*shape)
+    mx_random.normal = _normal_keyed
     mx.random = mx_random  # type: ignore[attr-defined]
 
     # --- mlx.core.linalg ---
@@ -459,14 +466,16 @@ class TestLayerCacheUpdateAndFetch:
             lc.update_and_fetch(keys, values)
 
     def test_inner_reset_on_update_and_fetch_failure(self) -> None:
-        """If update_and_fetch on the inner cache raises, _inner should be reset to
-        None so the next call gets a fresh, clean inner cache."""
+        """If update_and_fetch on the inner cache raises, the exception must
+        propagate and _inner must NOT be reset — callers are expected to restart
+        generation entirely, not retry a single token against a clean cache."""
         from apple_basefm._kv.cache_v2 import _TurboQuantV2LayerCache
 
         lc = _TurboQuantV2LayerCache(bits=4, group_size=4, step=256, rotation=None)
         # Force _inner to exist first
         lc._ensure_inner()
-        assert lc._inner is not None
+        inner_before = lc._inner
+        assert inner_before is not None
 
         # Patch inner's update_and_fetch to raise
         lc._inner.update_and_fetch = lambda k, v: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[method-assign]
@@ -474,8 +483,9 @@ class TestLayerCacheUpdateAndFetch:
         with pytest.raises(RuntimeError, match="boom"):
             lc.update_and_fetch(np.ones((1, 1, 1, 4)), np.zeros((1, 1, 1, 4)))
 
-        # _inner must be cleared so next call rebuilds cleanly
-        assert lc._inner is None
+        # _inner must NOT be cleared — exception should propagate to DSPy retry
+        # layer which restarts generation entirely (see update_and_fetch docstring)
+        assert lc._inner is inner_before
 
     def test_ensure_inner_step_attribute_error_does_not_raise(self) -> None:
         """If inner.step is read-only in a future mlx-lm, _ensure_inner must not raise."""

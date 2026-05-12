@@ -639,8 +639,32 @@ class TestRunAsync:
 
         def _fake_apply(loop: Any) -> None:
             apply_called.append(True)
-            # patch run_until_complete so the real loop isn't broken
-            loop.run_until_complete = lambda coro: asyncio.get_event_loop().run_until_complete(coro)  # noqa: E501
+            # Python 3.10+ raises "Cannot run the event loop while another loop
+            # is running" even for a freshly-created loop on the same thread.
+            # Run the coroutine in a daemon thread that owns its own event loop.
+            import threading
+
+            def _run_in_new_loop(coro: Any) -> Any:
+                result_holder: list[Any] = []
+                error_holder: list[BaseException] = []
+
+                def _worker() -> None:
+                    new_loop = asyncio.new_event_loop()
+                    try:
+                        result_holder.append(new_loop.run_until_complete(coro))
+                    except BaseException as exc:  # noqa: BLE001
+                        error_holder.append(exc)
+                    finally:
+                        new_loop.close()
+
+                t = threading.Thread(target=_worker, daemon=True)
+                t.start()
+                t.join(timeout=5)
+                if error_holder:
+                    raise error_holder[0]
+                return result_holder[0] if result_holder else None
+
+            loop.run_until_complete = _run_in_new_loop
 
         fake_nest.apply = _fake_apply  # type: ignore[attr-defined]
 

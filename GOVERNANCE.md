@@ -3,6 +3,7 @@
 **Date**: 2026-05-12
 **Scope**: Full codebase — `apple_basefm/` package, `tests/`, `scripts/`, `.github/skills/` scripts.
 **Scanner**: `python3 scripts/guard.py --strict` (full project) and `--dir apple_basefm --strict` (package only)
+**Last scan**: 2026-05-12 (post TurboQuant V2 changes)
 
 ---
 
@@ -25,7 +26,19 @@ Scanning /home/noot/dspy-apple …
   subprocess.run() called with shell=True. Use a list of arguments and shell=False to prevent command injection.
   > r = subprocess.run(
 
-Found 3 violation(s): 3 HIGH
+[WARNING] JSON-1  tests/test_cli.py:211
+  json.loads() called outside a try/except block.
+  > parsed = json.loads(out)
+
+[WARNING] JSON-1  tests/test_cli.py:340
+  json.loads() called outside a try/except block.
+  > parsed = json.loads(out)
+
+[WARNING] JSON-1  tests/test_cli.py:502
+  json.loads() called outside a try/except block.
+  > parsed = json.loads(out)
+
+Found 6 violation(s): 3 HIGH, 3 WARNING
 ```
 
 > **Note**: `review/scripts/pr.py` was flagged in the initial scan (shell=True + git-ref
@@ -132,6 +145,7 @@ code, diff, _ = run(["git", "diff", f"{base}...HEAD"], cwd=cwd)
 | XML parsed with entity expansion disabled | ✅ Pass | No XML parsing in codebase |
 | No `eval()` or `exec()` on user input | ✅ Pass | No eval/exec calls in package or tests |
 | JSON parse errors handled before accessing fields | ✅ Pass | `json.loads()` in `_hardware.py` is wrapped in `try/except json.JSONDecodeError`; `json.loads()` in `_catalog.py`'s `read_json` helper catches all exceptions |
+| `json.loads()` in `tests/test_cli.py` (lines 211, 340, 502) | ✅ Accepted false positive | These parse the CLI's own serialized output to assert correctness. An uncaught `JSONDecodeError` here is the *correct* failure mode — it means the formatter produced invalid JSON. Wrapping in try/except would suppress a real test failure. Scanner rule JSON-1 does not apply to test assertions on controlled output. |
 
 ### Sensitive Data
 
@@ -174,13 +188,13 @@ AppleLocalLM params           __init__()                      ValueError for bac
 
 ## Summary
 
-| Area | Distributed Package (`apple_basefm/`) | Tooling (`.github/skills/`) |
-|---|---|---|
-| Schema Enforcement | ✅ Clean | N/A |
-| Injection | ✅ Clean | ❌ INJ-1 in `pr.py` (P1), INJ-1 in 3 others (P2) |
-| Deserialization | ✅ Clean | ✅ Clean |
-| Sensitive Data | ✅ Clean | ✅ Clean |
-| Format Normalization | ✅ Clean | ✅ Clean |
+| Area | Distributed Package (`apple_basefm/`) | Tests (`tests/`) | Tooling (`.github/skills/`) |
+|---|---|---|---|
+| Schema Enforcement | ✅ Clean | N/A | N/A |
+| Injection | ✅ Clean | ✅ Clean | ❌ INJ-1 in `pr.py` (P1), INJ-1 in 3 others (P2) |
+| Deserialization | ✅ Clean | ✅ Clean (JSON-1 × 3 = accepted false positives) | ✅ Clean |
+| Sensitive Data | ✅ Clean | ✅ Clean | ✅ Clean |
+| Format Normalization | ✅ Clean | N/A | ✅ Clean |
 
 **The distributed `apple_basefm` package has no governance violations.**
 
@@ -196,3 +210,79 @@ The one genuine security finding (`INJ-1` in `review/scripts/pr.py`) affects onl
 | P2 | INJ-1 | `.github/skills/distribution/scripts/release.py` | Replace `shell=True` with list-form calls |
 | P2 | INJ-1 | `.github/skills/planning/scripts/recon.py` | Replace `shell=True` with list-form calls |
 | P2 | INJ-1 | `.github/skills/production/scripts/check.py` | Replace `shell=True` with list-form calls |
+| ✅ Accepted | JSON-1 | `tests/test_cli.py:211,340,502` | False positive — test assertions on controlled CLI output. `JSONDecodeError` is the correct failure signal; suppressing it would hide regressions. No action. |
+
+---
+
+## Pre-Implementation Review: `download` Subcommand
+
+**Date**: 2026-05-12
+**Scope**: Planned `apple-basefm download REPO_ID [--revision REV] [--dry-run] [--yes]` CLI subcommand.
+**Status**: Design review — no implementation exists yet. Findings are requirements for implementors.
+
+### New Trust Boundaries
+
+```
+External Data Source              Entry Point                      Guard Required
+─────────────────────────         ──────────────────────────       ──────────────────────────────────────────
+CLI: REPO_ID positional arg       _cmd_download(args.repo_id)      Validate format before passing to Hub APIs
+CLI: --revision arg               args.revision                    Pass as opaque string; Hub validates; no shell use
+Hub API: repo_info() response     repo_info(repo_id)               getattr with None fallback for all fields
+Hub API: Hub metadata (disk size) repo_info().siblings[].size      int() in try/except; fall back to catalog value
+Local filesystem: cache path      snapshot_download() return value Print verbatim; do not execute or log as command
+```
+
+### Schema Enforcement
+
+| Check | Required | Notes |
+|---|---|---|
+| `REPO_ID` format validated before Hub call | ✅ Required | Must match `owner/repo-name` pattern. A REPO_ID like `../../../../etc/passwd` or one containing shell metacharacters must be rejected before it reaches `snapshot_download()` or `repo_info()`. Recommended: `re.fullmatch(r"[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+", repo_id)`. |
+| `--revision` treated as opaque string | ✅ Required | Pass directly to `snapshot_download(revision=...)`. Hub validates commit hashes and branch names; no local validation needed beyond length limit. Must not be shell-interpolated. |
+| Hub `repo_info()` response fields accessed defensively | ✅ Required | Use `getattr(info, field, None)` for all metadata fields; Hub API shape can change across `huggingface_hub` versions. |
+| Disk size estimation: catalog value preferred over Hub metadata | ✅ Required | For REPO_IDs matching the offline catalog, use `catalog_entry.disk_gb`. For others, derive from `sum(s.size for s in repo_info().siblings if s.size)` in `try/except`; fall back to `None` (skip preflight) if Hub metadata is unavailable. See `gpt-oss-20b` note in `_catalog.py`. |
+| Cache path output sanitised before print | ✅ Required | The path returned by `snapshot_download()` is a local filesystem path. Print it verbatim to stdout. Do not format it into a shell command or log it at DEBUG level (avoids leaking the home directory path in public logs). |
+
+### Injection
+
+| Check | Status | Notes |
+|---|---|---|
+| `REPO_ID` never shell-interpolated | ✅ Must enforce | `snapshot_download` and `repo_info` accept `repo_id` as a Python string argument — no shell invocation. `shell=False` is irrelevant here (no subprocess), but the pattern must hold if any future wrapper adds subprocess calls. |
+| `--revision` never shell-interpolated | ✅ Must enforce | Same as above. |
+| No `subprocess.run(shell=True)` in `_cmd_download` | ✅ Must enforce | If progress reporting or any helper is added via subprocess, use list-form only. |
+| `REPO_ID` path traversal in any `local_dir` usage | ✅ Must enforce | If `snapshot_download(local_dir=...)` is used instead of the default cache path, validate that the resolved `local_dir` path does not escape the intended target directory (use `Path.resolve()` and check the prefix). Default cache path (no `local_dir`) is safe — Hub manages it. |
+
+### Sensitive Data
+
+| Check | Status | Notes |
+|---|---|---|
+| `HF_TOKEN` never logged | ✅ Must enforce | `huggingface_hub` reads `HF_TOKEN` from env internally. `_cmd_download` must not log `os.environ`, the full Hub client config, or any auth headers. Log only: repo ID, revision, estimated size, and result path. |
+| Token not echoed in error messages | ✅ Must enforce | If `repo_info()` raises `RepositoryNotFoundError` or `GatedRepoError`, surface only the repo ID and a human-readable action (e.g. "run `huggingface-cli login`") — never the raw exception chain which may contain auth context. |
+| Cache path not logged at INFO level in non-verbose mode | ⚠️ Recommended | The local cache path contains the user's home directory. Print to stdout on success (the user chose to see it); do not emit at `logger.info()` which would appear in library consumers' log streams. |
+
+### Deserialization
+
+| Check | Status | Notes |
+|---|---|---|
+| Hub API response deserialization | ✅ Already handled | `huggingface_hub` deserializes all Hub responses internally. `_cmd_download` only calls typed Hub SDK methods (`repo_info`, `snapshot_download`) and reads typed attributes — no raw JSON parsing. |
+| No pickle, yaml.load, or eval on any Hub response | ✅ N/A | No such patterns are required by the download flow. |
+
+### Format Normalization
+
+| Check | Status | Notes |
+|---|---|---|
+| `REPO_ID` normalized to lowercase before comparison with catalog | ✅ Required | HuggingFace repo IDs are case-insensitive on the Hub but the local catalog uses lowercase. Normalize with `.lower()` before the catalog lookup to avoid a case mismatch causing the preflight to skip the catalog disk_gb and fall through to unreliable Hub metadata. |
+| Disk size comparison uses consistent units | ✅ Required | `detect_hardware().free_disk_gb` returns a float in GB. Hub sibling sizes are in bytes. Convert to GB (`bytes / 1e9`) before comparison; use the catalog `disk_gb` float directly when available. |
+
+### Boundary Map (download subcommand)
+
+```
+External Data Source          Entry Point                        Guard
+─────────────────────         ──────────────────────             ──────────────────────────────────────────
+CLI: REPO_ID                  args.repo_id (argparse)            re.fullmatch pattern before any Hub call
+CLI: --revision               args.revision (argparse)           Opaque string; Hub validates; length limit only
+Hub: repo_info() metadata     repo_info(repo_id)                 getattr + try/except; catalog disk_gb preferred
+Hub: snapshot_download()      snapshot_download(repo_id, rev)    No local_dir → default cache is safe
+Filesystem: returned path     print(result_path)                 Verbatim stdout only; not logged via logger
+Env: HF_TOKEN                 huggingface_hub internals          Never logged; error messages strip auth context
+Hardware: free_disk_gb        detect_hardware().free_disk_gb     Compared in GB; catalog value preferred for size
+```

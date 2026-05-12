@@ -23,15 +23,24 @@ import pytest
 
 
 def _reload_compat_without_dspy():
-    """Temporarily remove dspy and reload _compat to force DSPY_AVAILABLE=False."""
-    saved_dspy = sys.modules.pop("dspy", None)
+    """Temporarily block dspy and reload _compat to force DSPY_AVAILABLE=False."""
+    # Setting sys.modules["dspy"] = None tells Python's import machinery that
+    # dspy failed to import; any subsequent `import dspy` or `from dspy import X`
+    # will raise ImportError immediately without re-executing the package.
+    # Simply popping the key is insufficient because Python will just re-import
+    # the (installed) package, which succeeds and sets DSPY_AVAILABLE=True.
+    _MISSING = object()
+    saved = sys.modules.get("dspy", _MISSING)
+    sys.modules["dspy"] = None  # type: ignore[assignment]
     sys.modules.pop("apple_basefm._compat", None)
     try:
         return importlib.import_module("apple_basefm._compat")
     finally:
-        # Always restore dspy so other tests are not affected.
-        if saved_dspy is not None:
-            sys.modules["dspy"] = saved_dspy
+        # Restore dspy so other tests are not affected.
+        if saved is _MISSING:
+            sys.modules.pop("dspy", None)
+        else:
+            sys.modules["dspy"] = saved
         # Force a clean reload of _compat on next import so the real
         # DSPY_AVAILABLE=True module is restored for subsequent tests.
         sys.modules.pop("apple_basefm._compat", None)
