@@ -242,9 +242,9 @@ class AppleFoundationLM(_AppleBaseLM):
             import apple_fm_sdk as fm
         except ImportError as exc:
             raise ImportError(
-                "apple-fm-sdk is not available on PyPI. "
-                "Install it via Apple's developer distribution channel.\n"
-                "See: https://developer.apple.com/documentation/foundationmodels"
+                "apple-fm-sdk is not installed. "
+                "Install it with: pip install 'apple-basefm[foundation,apple-fm-sdk,dspy]'\n"
+                "Setup guide: https://apple.github.io/python-apple-fm-sdk/getting_started.html"
             ) from exc
 
         self._fm = fm
@@ -442,7 +442,7 @@ class AppleFoundationLM(_AppleBaseLM):
                             **respond_kwargs,
                         )
                     text = json.dumps(dataclasses.asdict(result))
-                except TimeoutError:
+                except (TimeoutError, asyncio.TimeoutError):
                     raise RuntimeError(
                         f"AppleFoundationLM: session.respond() timed out after {self._timeout}s. "
                         "The on-device model may be busy. Try increasing the timeout parameter."
@@ -465,7 +465,7 @@ class AppleFoundationLM(_AppleBaseLM):
                             )
                         else:
                             text = await session.respond(prompt=flat_prompt, **respond_kwargs)
-                    except TimeoutError:
+                    except (TimeoutError, asyncio.TimeoutError):
                         raise RuntimeError(
                             f"AppleFoundationLM: fallback session.respond() timed out after "
                             f"{self._timeout}s."
@@ -482,7 +482,7 @@ class AppleFoundationLM(_AppleBaseLM):
                         )
                     else:
                         text = await session.respond(prompt=flat_prompt, **respond_kwargs)
-                except TimeoutError:
+                except (TimeoutError, asyncio.TimeoutError):
                     raise RuntimeError(
                         f"AppleFoundationLM: session.respond() timed out after {self._timeout}s."
                     ) from None

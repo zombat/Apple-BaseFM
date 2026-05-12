@@ -207,6 +207,7 @@ class _MLXMixin:
         temperature: float,
         max_tokens: int,
         logits_processors: list[Any] | None = None,
+        prompt_cache: list[Any] | None = None,
     ) -> tuple[str, str]:
         """Run synchronous (non-streaming) MLX inference.
 
@@ -215,6 +216,7 @@ class _MLXMixin:
             temperature: Sampling temperature forwarded to make_sampler.
             max_tokens: Maximum number of tokens to generate.
             logits_processors: Optional list of logits processors.
+            prompt_cache: Per-layer KV cache list, or None for mlx-lm default.
 
         Returns:
             A (generated_text, flat_prompt) tuple.
@@ -231,6 +233,8 @@ class _MLXMixin:
         }
         if logits_processors:
             generate_kwargs["logits_processors"] = logits_processors
+        if prompt_cache is not None:
+            generate_kwargs["prompt_cache"] = prompt_cache
         text = mlx_lm.generate(
             self._mlx_model,
             self._mlx_tokenizer,
@@ -245,6 +249,7 @@ class _MLXMixin:
         temperature: float,
         max_tokens: int,
         logits_processors: list[Any] | None = None,
+        prompt_cache: list[Any] | None = None,
     ) -> AsyncGenerator[str, None]:
         """Bridge mlx_lm.stream_generate() (sync generator) to an async generator.
 
@@ -280,6 +285,8 @@ class _MLXMixin:
         }
         if logits_processors:
             stream_kwargs["logits_processors"] = logits_processors
+        if prompt_cache is not None:
+            stream_kwargs["prompt_cache"] = prompt_cache
 
         def _run() -> None:
             """Generate tokens in a thread and enqueue each one for the async consumer."""

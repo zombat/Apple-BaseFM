@@ -9,11 +9,11 @@ Demonstrates three usage patterns:
 
 Requirements:
   * macOS 14+ on Apple Silicon (M1 / M2 / M3 / M4)
-  * pip install "apple-basefm[mlx,dspy]"
+    * pip install "apple-basefm[mlx,apple-fm-sdk,dspy]"
 
 For AppleFoundationLM (Apple Intelligence):
   * macOS 26+ with Apple Intelligence enabled
-  * apple-fm-sdk from Apple's developer distribution channel
+    * apple-fm-sdk setup guide: https://apple.github.io/python-apple-fm-sdk/getting_started.html
 """
 from __future__ import annotations
 
@@ -22,10 +22,21 @@ import os
 # ---------------------------------------------------------------------------
 # Pattern 1: Standalone — no DSPy required
 # ---------------------------------------------------------------------------
+# Use this pattern when you want direct, low-level control over prompts and
+# responses without bringing in DSPy abstractions. It is ideal for quick smoke
+# tests, debugging model behavior, and simple scripts.
 
 
 def pattern_1_standalone() -> None:
-    """Run a single local model inference without DSPy."""
+    """Run one local inference by calling AppleLocalLM.forward() directly.
+
+    This demonstrates the minimal integration path:
+        1) instantiate a local model,
+        2) send chat-style messages,
+        3) read the returned response object.
+    """
+    print("Uses AppleLocalLM.forward() directly — no DSPy required.")
+    print("Ideal for quick tests, debugging, and simple scripts.\n")
     from apple_basefm import AppleLocalLM
 
     lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
@@ -46,6 +57,8 @@ def pattern_1_standalone() -> None:
 
 def pattern_2_full_dspy() -> None:
     """Configure AppleLocalLM as the global DSPy LM and use dspy.Predict."""
+    print("Registers AppleLocalLM as the global DSPy LM via dspy.configure().")
+    print("dspy.Predict handles prompt formatting and output parsing automatically.\n")
     import dspy
 
     from apple_basefm import AppleLocalLM
@@ -68,6 +81,8 @@ def pattern_3_mixed_pipeline() -> None:
 
     Requires OPENAI_API_KEY in the environment.
     """
+    print("Uses AppleLocalLM for cheap local extraction, then a cloud LM for reasoning.")
+    print("Each dspy.Predict step can target a different model via the lm= override.\n")
     import dspy
 
     from apple_basefm import AppleLocalLM
@@ -107,6 +122,8 @@ def pattern_3_mixed_pipeline() -> None:
 
 def pattern_4_apple_intelligence() -> None:
     """Use AppleFoundationLM (the system model) with native guided generation."""
+    print("Uses AppleFoundationLM — Apple's on-device system model (macOS 26+, Apple Intelligence required).")
+    print("Requires: pip install 'apple-basefm[foundation,apple-fm-sdk,dspy]'\n")
     import platform
 
     if platform.system() != "Darwin":
