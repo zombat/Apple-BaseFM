@@ -242,9 +242,9 @@ class AppleFoundationLM(_AppleBaseLM):
             import apple_fm_sdk as fm
         except ImportError as exc:
             raise ImportError(
-                "apple-fm-sdk is not available on PyPI. "
-                "Install it via Apple's developer distribution channel.\n"
-                "See: https://developer.apple.com/documentation/foundationmodels"
+                "apple-fm-sdk is not installed. "
+                "Install it with: pip install 'apple-basefm[foundation,apple-fm-sdk,dspy]'\n"
+                "Setup guide: https://apple.github.io/python-apple-fm-sdk/getting_started.html"
             ) from exc
 
         self._fm = fm

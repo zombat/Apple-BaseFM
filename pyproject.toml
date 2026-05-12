@@ -23,7 +23,7 @@ classifiers = [
 ]
 
 # No hard runtime dependencies: platform-specific packages are optional extras.
-# This ensures `pip install dspy-apple` never fails on Linux.
+# This ensures `pip install apple-basefm` never fails on Linux.
 dependencies = []
 
 [project.optional-dependencies]
@@ -32,8 +32,11 @@ dependencies = []
 dspy = ["dspy>=2.5.0"]
 
 # Apple Intelligence backend (macOS 26+, Apple Intelligence enabled)
-# apple_fm_sdk is not on PyPI; install separately from Apple's developer channel.
+# Includes apple-fm-sdk (now published on PyPI).
 foundation = ["nest-asyncio>=1.6.0"]
+
+# Apple Foundation Models SDK dependency (PyPI)
+apple-fm-sdk = ["apple-fm-sdk>=0.1.0"]
 
 # MLX backend (Apple Silicon, macOS 14+)
 mlx = ["mlx>=0.22.0", "mlx-lm>=0.22.0", "huggingface_hub>=0.23"]
@@ -49,7 +52,7 @@ dev = [
 ]
 
 # All optional runtime extras combined
-all = ["apple-basefm[foundation,mlx]"]
+all = ["apple-basefm[foundation,apple-fm-sdk,mlx,dspy]"]
 
 [project.scripts]
 "apple-basefm" = "apple_basefm._cli:main"

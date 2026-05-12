@@ -63,7 +63,7 @@ class TestConstruction:
                 apple_fm_mod.AppleFoundationLM()
 
     def test_import_error_message(self, monkeypatch: pytest.MonkeyPatch) -> None:
-        """ImportError must mention Apple developer channel, not PyPI."""
+        """ImportError must mention pip install instructions."""
         monkeypatch.delitem(sys.modules, "apple_fm_sdk", raising=False)
         if "apple_basefm.apple_fm" in sys.modules:
             del sys.modules["apple_basefm.apple_fm"]
@@ -71,7 +71,7 @@ class TestConstruction:
         with (
             patch("platform.system", return_value="Darwin"),
             patch.dict(sys.modules, {"apple_fm_sdk": None}),  # type: ignore[arg-type]
-            pytest.raises(ImportError, match="developer distribution channel"),
+            pytest.raises(ImportError, match="apple-fm-sdk"),
         ):
             # Force ImportError path by making import fail inside __init__.
             original_import = __builtins__.__import__ if hasattr(__builtins__, "__import__") else __import__  # type: ignore[union-attr]
@@ -419,3 +419,237 @@ class TestToolCacheLRU:
             apple_fm_mod._dspy_tool_to_apple_tool(fake_tool, fm)
 
         assert len(apple_fm_mod._tool_class_cache) <= apple_fm_mod._TOOL_CACHE_MAXSIZE
+
+
+# ---------------------------------------------------------------------------
+# _dspy_tool_to_apple_tool — cache hit + func=None paths
+# ---------------------------------------------------------------------------
+
+
+class TestDspyToolToAppleTool:
+    def test_cache_hit_returns_new_instance(self, apple_fm_mod: types.ModuleType) -> None:
+        """Calling with the same tool twice must hit the cache on the second call."""
+        import apple_fm_sdk as fm
+
+        apple_fm_mod._tool_class_cache.clear()
+
+        def my_func(**kwargs: Any) -> str:
+            return "ok"
+
+        tool = MagicMock()
+        tool.name = "cached_tool"
+        tool.func = my_func
+
+        first = apple_fm_mod._dspy_tool_to_apple_tool(tool, fm)
+        second = apple_fm_mod._dspy_tool_to_apple_tool(tool, fm)
+        # Both calls return instances of the same class (cached).
+        assert type(first) is type(second)
+
+    def test_func_none_raises_not_implemented(self, apple_fm_mod: types.ModuleType) -> None:
+        """A tool with no callable must raise NotImplementedError when .call() is invoked."""
+        import apple_fm_sdk as fm
+
+        apple_fm_mod._tool_class_cache.clear()
+
+        # A non-callable object without a .func attribute: func resolves to None.
+        class _NoFunc:
+            name = "no_func_tool"
+
+        tool = _NoFunc()
+        instance = apple_fm_mod._dspy_tool_to_apple_tool(tool, fm)
+        with pytest.raises(NotImplementedError, match="no callable"):
+            instance.call()
+
+
+# ---------------------------------------------------------------------------
+# _pydantic_to_generable — constraint annotations
+# ---------------------------------------------------------------------------
+
+
+class TestPydanticToGenerable:
+    def test_literal_same_type(self, apple_fm_mod: types.ModuleType) -> None:
+        """Literal[a, b] with same type must build a @generable class."""
+        from typing import Literal
+
+        import apple_fm_sdk as fm
+        from pydantic import BaseModel
+
+        class Model(BaseModel):
+            color: Literal["red", "blue"]
+
+        result = apple_fm_mod._pydantic_to_generable(Model, fm)
+        assert result is not None
+
+    def test_ge_le_range_constraint(self, apple_fm_mod: types.ModuleType) -> None:
+        """int field with ge/le must invoke fm.guide with range."""
+        import apple_fm_sdk as fm
+        from pydantic import BaseModel, Field
+
+        class Model(BaseModel):
+            score: int = Field(ge=0, le=100)
+
+        guide_calls: list[dict] = []
+        original_guide = fm.guide
+
+        def _recording_guide(name: str, **kwargs: Any) -> Any:
+            guide_calls.append({"name": name, **kwargs})
+            return original_guide(name, **kwargs)
+
+        fm.guide = _recording_guide
+        try:
+            apple_fm_mod._pydantic_to_generable(Model, fm)
+        finally:
+            fm.guide = original_guide
+
+        range_calls = [c for c in guide_calls if "range" in c]
+        assert range_calls, "Expected fm.guide(range=...) for ge/le field"
+
+    def test_make_dataclass_failure_returns_none(
+        self, apple_fm_mod: types.ModuleType
+    ) -> None:
+        """If make_dataclass raises, _pydantic_to_generable must return None."""
+        import apple_fm_sdk as fm
+        from pydantic import BaseModel
+
+        class Model(BaseModel):
+            value: str
+
+        with patch("dataclasses.make_dataclass", side_effect=RuntimeError("boom")):
+            result = apple_fm_mod._pydantic_to_generable(Model, fm)
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
+# aforward — tool conversion path
+# ---------------------------------------------------------------------------
+
+
+class TestAforwardWithTools:
+    @pytest.mark.asyncio
+    async def test_tools_passed_to_session(
+        self, fm_instance: Any, fake_apple_fm_sdk: types.ModuleType
+    ) -> None:
+        """DSPy tools must be converted and forwarded in session_kwargs['tools']."""
+        session_kwargs_received: list[dict] = []
+        original_session_cls = fake_apple_fm_sdk.LanguageModelSession
+
+        class _RecordingSession(original_session_cls):
+            def __init__(self_inner, **kwargs: Any) -> None:
+                session_kwargs_received.append(dict(kwargs))
+                super().__init__(**kwargs)
+
+        fake_apple_fm_sdk.LanguageModelSession = _RecordingSession
+
+        def my_tool(**kwargs: Any) -> str:
+            return "result"
+
+        my_tool.name = "my_tool"  # type: ignore[attr-defined]
+
+        try:
+            await fm_instance.aforward(
+                messages=[{"role": "user", "content": "use a tool"}],
+                tools=[my_tool],
+            )
+        finally:
+            fake_apple_fm_sdk.LanguageModelSession = original_session_cls
+
+        assert any("tools" in kw for kw in session_kwargs_received), (
+            "tools must be in session_kwargs when tools are supplied"
+        )
+
+
+# ---------------------------------------------------------------------------
+# aforward — generable with timeout=None
+# ---------------------------------------------------------------------------
+
+
+class TestAforwardGenerable:
+    @pytest.mark.asyncio
+    async def test_generable_timeout_none_skips_wait_for(
+        self, fm_instance: Any, fake_apple_fm_sdk: types.ModuleType
+    ) -> None:
+        """With timeout=None, asyncio.wait_for must NOT be called on the generable path."""
+        from pydantic import BaseModel
+
+        class Answer(BaseModel):
+            value: str
+
+        fm_instance._timeout = None
+        wait_for_calls: list[bool] = []
+        original_wait_for = asyncio.wait_for
+
+        async def _recording_wait_for(coro: Any, timeout: Any) -> Any:
+            wait_for_calls.append(True)
+            return await original_wait_for(coro, timeout=timeout)
+
+        generable_respond_called: list[bool] = []
+        original_session_cls = fake_apple_fm_sdk.LanguageModelSession
+
+        class _GenSession(original_session_cls):
+            async def respond(self_inner, prompt: str = "", **kwargs: Any) -> Any:
+                if "generating" in kwargs:
+                    generable_respond_called.append(True)
+                    result = MagicMock()
+                    with patch("dataclasses.asdict", return_value={"value": "ok"}):
+                        return result
+                return f"response to: {prompt}"
+
+        fake_apple_fm_sdk.LanguageModelSession = _GenSession
+        try:
+            with patch("asyncio.wait_for", side_effect=_recording_wait_for):
+                response = await fm_instance.aforward(
+                    messages=[{"role": "user", "content": "test"}],
+                    response_format=Answer,
+                )
+        finally:
+            fake_apple_fm_sdk.LanguageModelSession = original_session_cls
+
+        assert wait_for_calls == [], "asyncio.wait_for must not be called when timeout=None"
+        assert response is not None
+
+
+# ---------------------------------------------------------------------------
+# _run_async — running event loop (nest_asyncio) path
+# ---------------------------------------------------------------------------
+
+
+class TestRunAsync:
+    @pytest.mark.asyncio
+    async def test_run_async_raises_without_nest_asyncio(
+        self, apple_fm_mod: types.ModuleType
+    ) -> None:
+        """Without nest_asyncio, calling _run_async from a running loop must raise."""
+
+        async def _dummy() -> str:
+            return "ok"
+
+        with patch.dict(sys.modules, {"nest_asyncio": None}):
+            with pytest.raises(RuntimeError, match="nest_asyncio"):
+                apple_fm_mod._run_async(_dummy())
+
+    @pytest.mark.asyncio
+    async def test_run_async_uses_nest_asyncio_when_available(
+        self, apple_fm_mod: types.ModuleType
+    ) -> None:
+        """When nest_asyncio is importable and apply() works, _run_async must succeed."""
+        import types as _types
+
+        apply_called: list[bool] = []
+        fake_nest = _types.ModuleType("nest_asyncio")
+
+        def _fake_apply(loop: Any) -> None:
+            apply_called.append(True)
+            # patch run_until_complete so the real loop isn't broken
+            loop.run_until_complete = lambda coro: asyncio.get_event_loop().run_until_complete(coro)  # noqa: E501
+
+        fake_nest.apply = _fake_apply  # type: ignore[attr-defined]
+
+        async def _dummy() -> str:
+            return "hello"
+
+        with patch.dict(sys.modules, {"nest_asyncio": fake_nest}):
+            result = apple_fm_mod._run_async(_dummy())
+
+        assert apply_called, "nest_asyncio.apply must be called from a running loop"
+        assert result == "hello"
+

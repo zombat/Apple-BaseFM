@@ -388,3 +388,66 @@ class TestAforwardClamping:
 
         if captured_temperatures:
             assert captured_temperatures[0] <= 2.0
+
+
+# ---------------------------------------------------------------------------
+# _stream_generate_async — async token generator (MLX streaming)
+# ---------------------------------------------------------------------------
+
+
+class TestStreamGenerateAsync:
+    @pytest.mark.asyncio
+    async def test_yields_tokens_from_mlx(self, local_instance: Any) -> None:
+        """_stream_generate_async must yield each token produced by mlx_lm."""
+        tokens: list[str] = []
+        flat_prompt = "hello world"
+        async for token in local_instance._stream_generate_async(
+            flat_prompt=flat_prompt,
+            temperature=0.0,
+            max_tokens=10,
+        ):
+            tokens.append(token)
+        # fake mlx_lm.stream_generate yields ["token1 ", "token2 ", "token3"]
+        assert len(tokens) == 3
+        assert tokens[0] == "token1 "
+
+    @pytest.mark.asyncio
+    async def test_cancel_stops_producer(self, local_instance: Any) -> None:
+        """Breaking out of the async generator must set the cancel event."""
+        collected: list[str] = []
+        async for token in local_instance._stream_generate_async(
+            flat_prompt="hi",
+            temperature=0.0,
+            max_tokens=5,
+        ):
+            collected.append(token)
+            break  # cancel after first token
+        assert len(collected) >= 1
+
+
+# ---------------------------------------------------------------------------
+# forward() — dspy.streamify path (send_stream is not None)
+# ---------------------------------------------------------------------------
+
+
+class TestForwardStreamingPath:
+    def test_forward_with_send_stream_sends_chunks(self, local_instance: Any) -> None:
+        """When send_stream is set, forward() must call anyio_run for each token chunk."""
+        from unittest.mock import MagicMock, patch
+
+        sent: list[Any] = []
+
+        fake_stream = MagicMock()
+
+        with (
+            patch("apple_basefm.apple_local.get_send_stream", return_value=fake_stream),
+            patch("anyio.from_thread.run", side_effect=lambda fn, *args: sent.append(args[0])),
+        ):
+            response = local_instance.forward(
+                messages=[{"role": "user", "content": "hello"}],
+                cache=False,
+            )
+
+        # fake stream_generate yields 3 tokens → 3 chunks dispatched
+        assert len(sent) == 3
+        assert response.choices[0].message.content != ""

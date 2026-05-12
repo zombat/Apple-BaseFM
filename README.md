@@ -40,13 +40,11 @@ pip install "apple-basefm[mlx,dspy] @ git+https://github.com/zombat/Apple-BaseFM
 
 ### Apple Foundation Models (`AppleFoundationLM`)
 
-The Apple Foundation Models SDK is **not on PyPI**.
-Install it from [Apple's developer distribution channel](https://developer.apple.com/documentation/foundationmodels)
-on a Mac running macOS 26+.
+Install on a Mac running macOS 26+ with Apple Intelligence enabled.
+Setup guide: https://apple.github.io/python-apple-fm-sdk/getting_started.html
 
 ```bash
-pip install "apple-basefm[foundation,dspy] @ git+https://github.com/zombat/Apple-BaseFM.git"
-# then install apple-fm-sdk separately from Apple
+pip install "apple-basefm[foundation,apple-fm-sdk,dspy] @ git+https://github.com/zombat/Apple-BaseFM.git"
 ```
 
 ---
