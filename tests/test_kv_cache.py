@@ -127,7 +127,7 @@ class TestTurboQuantV2CacheValidation:
         c = TurboQuantV2Cache()
         assert c.bits == 4
         assert c.group_size == 64
-        assert c.use_rotation is True
+        assert c.use_rotation is False  # safe default until attention_v2.py ships
         assert c.step == 256
 
     def test_invalid_bits_raises(self) -> None:
@@ -288,6 +288,43 @@ class TestTurboQuantV2CacheBuild:
         layers = c.build(n_layers=2, head_dim=64)  # group_size > head_dim
         assert len(layers) == 2
 
+    def test_build_head_dim_zero_raises_value_error(self) -> None:
+        """head_dim=0 must raise ValueError before any MLX call is made."""
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        c = TurboQuantV2Cache(use_rotation=False)
+        with pytest.raises(ValueError, match="head_dim must be >= 1"):
+            c.build(n_layers=2, head_dim=0)
+
+    def test_build_head_dim_negative_raises_value_error(self) -> None:
+        """head_dim=-1 must raise ValueError."""
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        c = TurboQuantV2Cache(use_rotation=False)
+        with pytest.raises(ValueError, match="head_dim must be >= 1"):
+            c.build(n_layers=2, head_dim=-1)
+
+    def test_build_group_size_non_divisible_emits_warning(self, caplog) -> None:
+        """group_size that doesn't divide head_dim should emit a WARNING."""
+        import logging
+
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        c = TurboQuantV2Cache(bits=4, group_size=48, use_rotation=False)
+        with caplog.at_level(logging.WARNING, logger="apple_basefm._kv.cache_v2"):
+            c.build(n_layers=1, head_dim=64)  # 64 % 48 != 0
+        assert any("not evenly divisible" in r.message for r in caplog.records)
+
+    def test_use_rotation_true_emits_warning(self, caplog) -> None:
+        """Constructing TurboQuantV2Cache with use_rotation=True should emit a WARNING."""
+        import logging
+
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        with caplog.at_level(logging.WARNING, logger="apple_basefm._kv.cache_v2"):
+            TurboQuantV2Cache(use_rotation=True)
+        assert any("rotated" in r.message.lower() or "attention_v2" in r.message for r in caplog.records)
+
 
 # ---------------------------------------------------------------------------
 # _TurboQuantV2LayerCache.update_and_fetch()
@@ -407,6 +444,61 @@ class TestLayerCacheUpdateAndFetch:
         # P column-j picks row-j of input, so output[j] = input[P_col_j]
         np.testing.assert_array_almost_equal(received[0][0], [[[[4, 1, 2, 3]]]])
 
+    def test_shape_mismatch_raises_runtime_error_with_hint(self) -> None:
+        """Rotation applied to keys with mismatched last-dim must raise RuntimeError
+        with a diagnostic message naming the shapes involved."""
+        from apple_basefm._kv.cache_v2 import _TurboQuantV2LayerCache
+
+        rotation = np.eye(8)  # expects head_dim=8
+        lc = _TurboQuantV2LayerCache(bits=4, group_size=8, step=256, rotation=rotation)
+
+        # keys last dim is 4 — does not match rotation shape 8x8
+        keys = np.ones((1, 1, 1, 4))
+        values = np.zeros((1, 1, 1, 4))
+        with pytest.raises(RuntimeError, match="rotation matmul failed"):
+            lc.update_and_fetch(keys, values)
+
+    def test_inner_reset_on_update_and_fetch_failure(self) -> None:
+        """If update_and_fetch on the inner cache raises, _inner should be reset to
+        None so the next call gets a fresh, clean inner cache."""
+        from apple_basefm._kv.cache_v2 import _TurboQuantV2LayerCache
+
+        lc = _TurboQuantV2LayerCache(bits=4, group_size=4, step=256, rotation=None)
+        # Force _inner to exist first
+        lc._ensure_inner()
+        assert lc._inner is not None
+
+        # Patch inner's update_and_fetch to raise
+        lc._inner.update_and_fetch = lambda k, v: (_ for _ in ()).throw(RuntimeError("boom"))  # type: ignore[method-assign]
+
+        with pytest.raises(RuntimeError, match="boom"):
+            lc.update_and_fetch(np.ones((1, 1, 1, 4)), np.zeros((1, 1, 1, 4)))
+
+        # _inner must be cleared so next call rebuilds cleanly
+        assert lc._inner is None
+
+    def test_ensure_inner_step_attribute_error_does_not_raise(self) -> None:
+        """If inner.step is read-only in a future mlx-lm, _ensure_inner must not raise."""
+        from unittest.mock import MagicMock, patch
+
+        from apple_basefm._kv.cache_v2 import _TurboQuantV2LayerCache
+
+        lc = _TurboQuantV2LayerCache(bits=4, group_size=64, step=512, rotation=None)
+
+        class _ReadOnlyStepCache(MagicMock):
+            @property
+            def step(self):
+                return 256
+
+            @step.setter
+            def step(self, _value):
+                raise AttributeError("step is read-only")
+
+        with patch("mlx_lm.models.cache.QuantizedKVCache", return_value=_ReadOnlyStepCache()):
+            # Must not raise even though step= assignment raises AttributeError
+            lc._ensure_inner()
+        assert lc._inner is not None
+
 
 # ---------------------------------------------------------------------------
 # make_rotation_matrix
@@ -498,7 +590,7 @@ class TestAppleLocalLMKvCache:
 
         lm = _make_local_instance(apple_local_mod, kv_cache="turboquant-v2")
         assert isinstance(lm._kv_strategy, TurboQuantV2Cache)
-        assert lm._kv_strategy.use_rotation is True
+        assert lm._kv_strategy.use_rotation is False  # preset uses LEAN until attention_v2.py ships
         assert lm._head_dim == 64
         assert lm._n_layers == 1
 

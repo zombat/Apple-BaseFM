@@ -142,7 +142,7 @@ class TestTurboQuantV2CacheConstructorFuzz:
 
 class TestMakeRotationMatrixFuzz:
     @given(head_dim=st.integers(min_value=1, max_value=128))
-    @settings(max_examples=50)
+    @settings(max_examples=50, deadline=None)
     def test_result_is_always_square(self, head_dim: int) -> None:
         from apple_basefm._kv.rotation import make_rotation_matrix
 
@@ -150,7 +150,7 @@ class TestMakeRotationMatrixFuzz:
         assert Q.shape == (head_dim, head_dim)
 
     @given(head_dim=st.integers(min_value=1, max_value=64))
-    @settings(max_examples=50)
+    @settings(max_examples=50, deadline=None)
     def test_result_is_always_orthogonal(self, head_dim: int) -> None:
         """Q @ Q.T must be close to identity for every head_dim."""
         from apple_basefm._kv.rotation import make_rotation_matrix

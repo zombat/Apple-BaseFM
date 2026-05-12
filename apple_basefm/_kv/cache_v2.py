@@ -46,9 +46,11 @@ class TurboQuantV2Cache:
     Args:
         bits: Bits per quantized element. Must be in {2, 4, 8}. Default: 4.
         group_size: Number of elements per quantization group. Default: 64.
-        use_rotation: Apply QR rotation before quantization. Default: True.
-            Set False for LEAN mode (fastest, exact numerical equivalence
-            to mlx-lm --kv-bits).
+        use_rotation: Apply QR rotation before quantization. Default: False.
+            Set True only after the attention_v2.py SDPA patch ships; without
+            it, attention scores are computed in rotated K/V space which is
+            not numerically equivalent to standard mlx-lm --kv-bits output.
+            False (LEAN mode) is safe and recommended until then.
         use_normalization: Reserved for future attention_v2.py SDPA patch.
             Currently a no-op. Default: True.
         step: Pre-allocation step size forwarded to QuantizedKVCache. Controls
@@ -62,7 +64,11 @@ class TurboQuantV2Cache:
 
     bits: int = 4
     group_size: int = 64
-    use_rotation: bool = True
+    # SAFETY: False by default until attention_v2.py SDPA patch ships.
+    # With True, K/V are stored in *rotated* space so attention scores are
+    # Q @ (K·R)ᵀ ≠ Q @ Kᵀ. This reduces quantization error but is not
+    # numerically equivalent to standard mlx-lm. See module docstring.
+    use_rotation: bool = False
     use_normalization: bool = True  # reserved — wired in attention_v2.py (future)
     step: int = 256
 
@@ -81,8 +87,16 @@ class TurboQuantV2Cache:
             raise ValueError(
                 f"TurboQuantV2Cache: step must be >= 1, got {self.step!r}."
             )
+        if self.use_rotation:
+            logger.warning(
+                "TurboQuantV2Cache: use_rotation=True — K/V are stored in rotated "
+                "space (Q @ (K·R)ᵀ ≠ Q @ Kᵀ). The compensating SDPA patch "
+                "(attention_v2.py) is not yet implemented. Attention scores will "
+                "differ from standard mlx-lm --kv-bits output. Use "
+                "use_rotation=False (LEAN mode) for strict numerical equivalence."
+            )
         if self.use_normalization:
-            logger.debug(
+            logger.info(
                 "TurboQuantV2Cache: use_normalization=True is reserved for "
                 "attention_v2.py (future); currently a no-op."
             )
@@ -100,9 +114,15 @@ class TurboQuantV2Cache:
             A list of n_layers _TurboQuantV2LayerCache instances.
 
         Raises:
+            ValueError: If head_dim is less than 1.
             RuntimeError: If mlx or mlx-lm is not installed, or if rotation
                 matrix generation fails.
         """
+        if head_dim < 1:
+            raise ValueError(
+                f"TurboQuantV2Cache.build(): head_dim must be >= 1, got {head_dim!r}."
+            )
+
         # Lazy init: compute rotation matrix once, reuse across all forward() calls.
         if self.use_rotation and self._rotation is None:
             from .rotation import make_rotation_matrix
@@ -115,6 +135,15 @@ class TurboQuantV2Cache:
                 "MLX will treat the entire head as one quantization group.",
                 self.group_size,
                 head_dim,
+            )
+        elif head_dim % self.group_size != 0:
+            logger.warning(
+                "TurboQuantV2Cache: head_dim (%d) is not evenly divisible by "
+                "group_size (%d). MLX quantization behaviour for the last "
+                "partial group is model-version-dependent and may raise a "
+                "runtime error. Consider using a group_size that divides head_dim.",
+                head_dim,
+                self.group_size,
             )
 
         # Import check — surfaces a clear error before entering generation.
@@ -178,7 +207,15 @@ class _TurboQuantV2LayerCache:
         from mlx_lm.models.cache import QuantizedKVCache
 
         inner = QuantizedKVCache(bits=self._bits, group_size=self._group_size)
-        inner.step = self._step
+        try:
+            inner.step = self._step
+        except AttributeError:
+            logger.warning(
+                "_TurboQuantV2LayerCache: could not set inner.step=%d — "
+                "QuantizedKVCache.step may be read-only in this mlx-lm version. "
+                "Pre-allocation step will use the mlx-lm default.",
+                self._step,
+            )
         self._inner = inner
 
     def update_and_fetch(self, keys, values):
@@ -199,9 +236,32 @@ class _TurboQuantV2LayerCache:
         """
         self._ensure_inner()
         if self.rotation is not None:
-            keys = keys @ self.rotation
-            values = values @ self.rotation
-        return self._inner.update_and_fetch(keys, values)
+            # Cast rotation to match the incoming key dtype (e.g. bfloat16).
+            # MLX matmul requires matching dtypes; the rotation is generated in
+            # the default float dtype which may differ from the model's dtype.
+            rotation = self.rotation
+            key_dtype = getattr(keys, "dtype", None)
+            if key_dtype is not None and getattr(rotation, "dtype", None) != key_dtype:
+                rotation = rotation.astype(key_dtype)
+            try:
+                keys = keys @ rotation
+                values = values @ rotation
+            except Exception as exc:
+                key_shape = getattr(keys, "shape", "?")
+                rot_shape = getattr(rotation, "shape", "?")
+                raise RuntimeError(
+                    f"TurboQuant V2: rotation matmul failed — key shape {key_shape}, "
+                    f"rotation shape {rot_shape}. This usually means head_dim at "
+                    f"inference time differs from head_dim used in build(). "
+                    f"Re-construct TurboQuantV2Cache if the model was reloaded."
+                ) from exc
+        try:
+            return self._inner.update_and_fetch(keys, values)
+        except Exception:
+            # Reset the inner cache so the next call gets a clean state rather
+            # than retrying against a half-updated buffer.
+            self._inner = None
+            raise
 
     @property
     def state(self):

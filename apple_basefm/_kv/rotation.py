@@ -12,6 +12,7 @@ quantization behaviour reproducible across runs.
 from __future__ import annotations
 
 import logging
+import time
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,13 @@ def make_rotation_matrix(head_dim: int):
         # Fixed seed: same matrix every run — reproducibility over variety.
         mx.random.seed(42)
         gaussian = mx.random.normal(shape=(head_dim, head_dim))
+        t0 = time.perf_counter()
         Q, _ = mx.linalg.qr(gaussian)
+        elapsed = time.perf_counter() - t0
+        logger.info(
+            "Generated %dx%d QR rotation matrix for KV cache in %.3fs",
+            head_dim, head_dim, elapsed,
+        )
     except AttributeError as exc:
         if "qr" in str(exc).lower():
             raise RuntimeError(
@@ -54,6 +61,10 @@ def make_rotation_matrix(head_dim: int):
                 "Upgrade with: pip install 'mlx-lm>=0.22.0'"
             ) from exc
         raise
+    except Exception as exc:
+        raise RuntimeError(
+            f"make_rotation_matrix failed for head_dim={head_dim}: {exc}"
+        ) from exc
 
     logger.debug("Generated %dx%d QR rotation matrix for KV cache", head_dim, head_dim)
     return Q
