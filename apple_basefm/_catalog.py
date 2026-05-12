@@ -151,7 +151,8 @@ def _infer_params_b(repo_id: str) -> float | None:
     """Infer parameter count in billions from a repo_id string."""
     match = re.search(r"(\d+(?:\.\d+)?)B", repo_id, re.IGNORECASE)
     if match:
-        return float(match.group(1))
+        value = float(match.group(1))
+        return value if value > 0 else None
     return None
 
 

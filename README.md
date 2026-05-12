@@ -78,7 +78,33 @@ qa = dspy.Predict("question -> answer")
 print(qa(question="Explain quantum entanglement in one sentence.").answer)
 ```
 
-### 3. Mixed pipeline — local preprocessing + cloud reasoning
+### 3. Token usage — track cumulative cost before migrating to a paid API
+
+```python
+from apple_basefm import AppleLocalLM, token_session
+import dspy
+
+lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
+dspy.configure(lm=lm)
+
+qa = dspy.Predict("question -> answer")
+
+with token_session() as session:
+    lm.forward(messages=[{"role": "user", "content": "What is the capital of France?"}])
+    qa(question="Explain photosynthesis in one sentence.")
+
+print(session.prompt_tokens)      # total input tokens
+print(session.completion_tokens)  # total output tokens
+print(session.total_tokens)       # combined
+print(session.call_count)         # number of LM calls
+
+# Forecast cost before switching to a paid provider:
+input_cost  = session.prompt_tokens     / 1_000_000 * 3.00   # e.g. $3/M input
+output_cost = session.completion_tokens / 1_000_000 * 15.00  # e.g. $15/M output
+print(f"Estimated cost: ${input_cost + output_cost:.6f}")
+```
+
+### 4. Mixed pipeline — local preprocessing + cloud reasoning
 
 ```python
 import dspy
@@ -131,7 +157,7 @@ Key parameters:
 |---|---|---|
 | `model` | `"apple/on-device"` | Identifier stored in cache keys / history |
 | `temperature` | `None` | Passed to `GenerationOptions`; `None` uses model default |
-| `max_tokens` | `None` | Reserved; stored but not yet wired in SDK |
+| `max_tokens` | `None` | Passed to `GenerationOptions`; falls back gracefully if SDK version does not support it |
 | `cache` | `True` | Enable DSPy request cache |
 | `timeout` | `120.0` | Max seconds per `session.respond()` call; `None` disables |
 
@@ -222,6 +248,84 @@ lm = AppleLocalLM(
 | `"turboquant-v2-lean"` | 4 | No | Permanent stable alias; always `use_rotation=False`, numerically identical to `mlx-lm --kv-bits 4` |
 
 `TurboQuantV2Cache` valid values: `bits` ∈ `{2, 4, 8}`, `group_size` ≥ 1, `step` ≥ 1.
+
+---
+
+## Token Usage & Cost Forecasting
+
+`token_session()` accumulates token counts across all LM calls within a block — standalone
+`lm.forward()` and DSPy `Predict`/`ChainOfThought` calls alike. Use it to measure how many
+tokens your local DSPy programs consume before deciding whether to migrate to a paid
+provider.
+
+### Context manager
+
+```python
+from apple_basefm import token_session
+
+with token_session() as session:
+    # any number of LM calls here
+    ...
+
+print(session.prompt_tokens)      # int — cumulative input tokens
+print(session.completion_tokens)  # int — cumulative output tokens
+print(session.total_tokens)       # int — prompt + completion
+print(session.call_count)         # int — number of completed LM calls
+```
+
+DSPy cache hits are **not** counted — they have no API cost on a paid provider either.
+
+### Nesting
+
+Each `token_session()` is isolated. Calls inside an inner session count only toward the
+inner accumulator; the outer session resumes counting after the inner block exits.
+
+```python
+with token_session() as outer:
+    lm.forward(...)               # counted in outer
+    with token_session() as inner:
+        lm.forward(...)           # counted in inner only
+    lm.forward(...)               # counted in outer again
+```
+
+### Resuming across multiple blocks
+
+Pass an existing `_SessionAccumulator` to merge counts across non-contiguous blocks:
+
+```python
+from apple_basefm import token_session, _SessionAccumulator
+
+acc = _SessionAccumulator()
+with token_session(accumulator=acc):
+    lm.forward(...)     # block 1
+with token_session(accumulator=acc):
+    lm.forward(...)     # block 2
+print(acc.total_tokens) # sum of both blocks
+```
+
+### Per-instance lifetime counter
+
+Every LM instance has a `usage` attribute that accumulates counts for the lifetime of
+the object, independent of any `token_session()`:
+
+```python
+lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
+lm.forward(...)
+lm.forward(...)
+print(lm.usage.total_tokens)   # lifetime total since construction
+print(lm.usage.call_count)
+
+lm.reset_usage()               # reset to zero
+```
+
+### Notes
+
+- `AppleFoundationLM` always contributes zero token counts (`call_count` still increments)
+  because the on-device SDK does not expose token counts.
+- `token_session()` propagates correctly into `asyncio` tasks and `asyncio.to_thread()`.
+  It does **not** propagate into manually created `threading.Thread` instances.
+- `lm.usage` is not locked for concurrent `aforward()` calls (`max_concurrency > 1`) —
+  counts are approximate when concurrency is enabled.
 
 ---
 
@@ -456,8 +560,9 @@ export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
 
 | apple-basefm | DSPy | Python | macOS (local models) | macOS (Foundation) |
 |---|---|---|---|---|
-| 0.2.x | ≥ 2.5.0 | ≥ 3.11 | 14+ (Apple Silicon) | 26+ (Apple Intelligence) |
-| 0.1.x | ≥ 2.5.0 | ≥ 3.11 | 14+ (Apple Silicon) | 26+ (Apple Intelligence) |
+| 0.3.x | ≥ 2.5.0 | ≥ 3.10 | 14+ (Apple Silicon) | 26+ (Apple Intelligence) |
+| 0.2.x | ≥ 2.5.0 | ≥ 3.10 | 14+ (Apple Silicon) | 26+ (Apple Intelligence) |
+| 0.1.x | ≥ 2.5.0 | ≥ 3.10 | 14+ (Apple Silicon) | 26+ (Apple Intelligence) |
 
 ---
 

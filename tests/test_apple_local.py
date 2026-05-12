@@ -451,3 +451,74 @@ class TestForwardStreamingPath:
         # fake stream_generate yields 3 tokens → 3 chunks dispatched
         assert len(sent) == 3
         assert response.choices[0].message.content != ""
+
+
+# ---------------------------------------------------------------------------
+# Token usage — lm.usage per-instance counter and logger.debug output
+# ---------------------------------------------------------------------------
+
+
+class TestTokenUsage:
+    def test_usage_starts_at_zero(self, local_instance: Any) -> None:
+        """lm.usage must be a _SessionAccumulator with all fields at zero."""
+        from apple_basefm._session import _SessionAccumulator
+
+        assert isinstance(local_instance.usage, _SessionAccumulator)
+        assert local_instance.usage.total_tokens == 0
+        assert local_instance.usage.call_count == 0
+
+    def test_forward_increments_usage(self, local_instance: Any) -> None:
+        """forward() must increment lm.usage after a successful non-streaming call."""
+        local_instance.forward(
+            messages=[{"role": "user", "content": "hello"}],
+            cache=False,
+        )
+        assert local_instance.usage.call_count == 1
+        assert local_instance.usage.total_tokens >= 0
+
+    def test_reset_usage(self, local_instance: Any) -> None:
+        """reset_usage() must return lm.usage to all-zero state."""
+        local_instance.forward(
+            messages=[{"role": "user", "content": "hello"}],
+            cache=False,
+        )
+        assert local_instance.usage.call_count == 1
+        local_instance.reset_usage()
+        assert local_instance.usage.call_count == 0
+        assert local_instance.usage.total_tokens == 0
+
+    def test_debug_log_contains_total_tokens(
+        self, local_instance: Any, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Non-streaming forward must emit a DEBUG log entry with total_tokens."""
+        import logging
+
+        with caplog.at_level(logging.DEBUG, logger="apple_basefm.apple_local"):
+            local_instance.forward(
+                messages=[{"role": "user", "content": "hello"}],
+                cache=False,
+            )
+
+        debug_records = [r for r in caplog.records if r.levelno == logging.DEBUG]
+        assert any("total_tokens" in r.__dict__ for r in debug_records), (
+            "Expected a DEBUG log record with 'total_tokens' extra field"
+        )
+
+    def test_session_accumulates_across_forward_calls(
+        self, local_instance: Any
+    ) -> None:
+        """token_session() must accumulate totals across multiple forward() calls."""
+        from apple_basefm._session import token_session
+
+        with token_session() as session:
+            local_instance.forward(
+                messages=[{"role": "user", "content": "one"}],
+                cache=False,
+            )
+            local_instance.forward(
+                messages=[{"role": "user", "content": "two"}],
+                cache=False,
+            )
+
+        assert session.call_count == 2
+        assert session.total_tokens >= 0

@@ -227,6 +227,64 @@ class TestMakeGenerationOptionsExceptionPath:
 
         assert "UNIQUE_GEN_OPTS_ERROR" in caplog.text
 
+    def test_max_tokens_passed_when_sdk_accepts_it(
+        self, fake_apple_fm_sdk: types.ModuleType
+    ) -> None:
+        """When max_tokens is set and SDK accepts it, GenerationOptions gets max_tokens."""
+        with patch("platform.system", return_value="Darwin"):
+            import apple_basefm.apple_fm as afm
+
+            lm = afm.AppleFoundationLM(temperature=0.5, max_tokens=256)
+
+        call_kwargs: list[dict] = []
+
+        def _capture(**kwargs: Any) -> MagicMock:
+            call_kwargs.append(kwargs)
+            return MagicMock()
+
+        fake_apple_fm_sdk.GenerationOptions = _capture  # type: ignore[attr-defined]
+        result = lm._make_generation_options()
+        assert result is not None
+        assert call_kwargs[0].get("max_tokens") == 256
+
+    def test_type_error_retries_without_max_tokens(
+        self, fake_apple_fm_sdk: types.ModuleType
+    ) -> None:
+        """TypeError on first call (SDK doesn't support max_tokens) must retry without it."""
+        with patch("platform.system", return_value="Darwin"):
+            import apple_basefm.apple_fm as afm
+
+            lm = afm.AppleFoundationLM(temperature=0.5, max_tokens=256)
+
+        call_count = 0
+
+        def _fail_first(**kwargs: Any) -> MagicMock:
+            nonlocal call_count
+            call_count += 1
+            if "max_tokens" in kwargs:
+                raise TypeError("unexpected keyword argument 'max_tokens'")
+            return MagicMock()
+
+        fake_apple_fm_sdk.GenerationOptions = _fail_first  # type: ignore[attr-defined]
+        result = lm._make_generation_options()
+        assert result is not None
+        assert call_count == 2  # first attempt failed, second succeeded
+
+    def test_type_error_both_attempts_returns_none(
+        self, fake_apple_fm_sdk: types.ModuleType
+    ) -> None:
+        """If both GenerationOptions attempts raise, _make_generation_options returns None."""
+        with patch("platform.system", return_value="Darwin"):
+            import apple_basefm.apple_fm as afm
+
+            lm = afm.AppleFoundationLM(temperature=0.5, max_tokens=256)
+
+        fake_apple_fm_sdk.GenerationOptions = MagicMock(  # type: ignore[attr-defined]
+            side_effect=TypeError("always fails")
+        )
+        result = lm._make_generation_options()
+        assert result is None
+
 
 # ---------------------------------------------------------------------------
 # apple_fm.aforward — tool conversion failure path

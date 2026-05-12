@@ -23,6 +23,7 @@ from typing import Any, Literal, get_args, get_origin
 from apple_basefm._base import _AppleBaseLM, _flatten_messages, _run_async
 from apple_basefm._compat import get_dspy_cache
 from apple_basefm._response import _FMChoice, _FMMessage, _FMResponse, _FMUsage  # noqa: F401
+from apple_basefm._telemetry import forward_span, record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,8 @@ class AppleFoundationLM(_AppleBaseLM):
         model: Identifier string stored in history and cache keys.
         temperature: Passed to GenerationOptions if supported by the SDK.
             None omits the option entirely (model uses its default).
-        max_tokens: Reserved for future SDK support; stored but not yet wired.
+        max_tokens: Maximum tokens for the response. Passed to GenerationOptions;
+            falls back gracefully if the SDK version does not support the parameter.
         cache: Whether to enable DSPy's request cache.
         timeout: Maximum seconds to wait for a single session.respond() call.
             Defaults to 120. Pass None to disable.
@@ -275,10 +277,24 @@ class AppleFoundationLM(_AppleBaseLM):
         opts: dict[str, Any] = {}
         if self._temperature is not None:
             opts["temperature"] = self._temperature
+        if self._max_tokens is not None:
+            # Pass max_tokens when the SDK supports it. The Apple FM SDK may not
+            # expose this kwarg on all releases; fall back gracefully if it raises.
+            opts["max_tokens"] = self._max_tokens
         if not opts:
             return None
         try:
             return fm.GenerationOptions(**opts)
+        except TypeError:
+            # SDK version does not accept max_tokens yet — retry without it.
+            opts.pop("max_tokens", None)
+            if not opts:
+                return None
+            try:
+                return fm.GenerationOptions(**opts)
+            except Exception as exc:
+                logger.debug("apple_fm: could not create GenerationOptions(%s): %s", opts, exc)
+                return None
         except Exception as exc:
             logger.debug("apple_fm: could not create GenerationOptions(%s): %s", opts, exc)
             return None
@@ -330,7 +346,8 @@ class AppleFoundationLM(_AppleBaseLM):
             if cached is not None:
                 return cached
 
-        response = _run_async(self.aforward(prompt=None, messages=messages, **kwargs))
+        with forward_span(model=self.model, backend="foundation", max_tokens=self._max_tokens):
+            response = _run_async(self.aforward(prompt=None, messages=messages, **kwargs))
 
         if cache:
             _cache.put(cache_request, response)
@@ -492,4 +509,5 @@ class AppleFoundationLM(_AppleBaseLM):
         finally:
             del session
 
-        return self._build_response(text)
+        response = self._build_response(text)
+        return response

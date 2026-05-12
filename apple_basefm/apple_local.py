@@ -46,6 +46,7 @@ from apple_basefm._mlx import (
     _response_format_to_schema,
 )
 from apple_basefm._response import _FMResponse, _FMUsage
+from apple_basefm._telemetry import forward_span, record_usage
 
 logger = logging.getLogger(__name__)
 
@@ -184,7 +185,10 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
         self._schema_processor_cache: dict[str, Any] = {}
 
         if bits is not None:
-            logger.info("AppleLocalLM: loading %r (expected %d-bit quantization)", model, bits)
+            logger.info(
+                "AppleLocalLM: loading %r (expected %d-bit quantization)", model, bits,
+                extra={"model": model, "backend": "mlx"},
+            )
 
         self._mlx_model, self._mlx_tokenizer = self._load_mlx(model)
         # HuggingFace tokenizers carry model_max_length in their saved config.
@@ -249,6 +253,7 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
                 prompt_tokens,
                 max_tokens,
                 self.context_window,
+                extra={"prompt_tokens": prompt_tokens, "model": self.model, "backend": "mlx"},
             )
         completion_tokens = len(self._mlx_tokenizer.encode(text))
         return _FMUsage(
@@ -386,11 +391,38 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
             _gen_kwargs: dict[str, Any] = {}
             if kv is not None:
                 _gen_kwargs["prompt_cache"] = kv
-            text, flat_prompt = self._generate(
-                messages, temperature, max_tokens, logits_processors, **_gen_kwargs
+            with forward_span(model=self.model, backend="mlx", max_tokens=max_tokens) as span:
+                text, flat_prompt = self._generate(
+                    messages, temperature, max_tokens, logits_processors, **_gen_kwargs
+                )
+                usage = self._compute_usage(flat_prompt, text, max_tokens)
+                record_usage(span, usage)
+                logger.debug(
+                    "apple_local: generation complete",
+                    extra={
+                        "prompt_tokens": usage.prompt_tokens,
+                        "completion_tokens": usage.completion_tokens,
+                        "total_tokens": usage.total_tokens,
+                        "model": self.model,
+                        "backend": "mlx",
+                    },
+                )
+
+        if send_stream is not None:
+            usage = self._compute_usage(flat_prompt, text, max_tokens)
+            with forward_span(model=self.model, backend="mlx", max_tokens=max_tokens) as span:
+                record_usage(span, usage)
+            logger.debug(
+                "apple_local: generation complete",
+                extra={
+                    "prompt_tokens": usage.prompt_tokens,
+                    "completion_tokens": usage.completion_tokens,
+                    "total_tokens": usage.total_tokens,
+                    "model": self.model,
+                    "backend": "mlx",
+                },
             )
 
-        usage = self._compute_usage(flat_prompt, text, max_tokens)
         response = self._build_response(text, usage=usage)
 
         if cache:
@@ -472,6 +504,18 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
 
         full_text = "".join(full_text_parts)
         usage = self._compute_usage(flat_prompt, full_text, max_tokens)
+        with forward_span(model=self.model, backend="mlx", max_tokens=max_tokens) as span:
+            record_usage(span, usage)
+        logger.debug(
+            "apple_local: generation complete",
+            extra={
+                "prompt_tokens": usage.prompt_tokens,
+                "completion_tokens": usage.completion_tokens,
+                "total_tokens": usage.total_tokens,
+                "model": self.model,
+                "backend": "mlx",
+            },
+        )
         response = self._build_response(full_text, usage=usage)
 
         if cache:

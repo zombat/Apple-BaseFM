@@ -7,6 +7,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [0.3.0] — 2026-05-12
+
+### Added
+
+- **`token_session()` context manager** — accumulates `prompt_tokens`,
+  `completion_tokens`, `total_tokens`, and `call_count` across all LM calls inside
+  a `with` block, whether made via standalone `lm.forward()` or through DSPy
+  `Predict`/`ChainOfThought`. Backed by `contextvars.ContextVar` for thread- and
+  async-safety. Supports nesting (each session is isolated) and resuming across
+  multiple blocks via an explicit `_SessionAccumulator`. DSPy cache hits are
+  intentionally not counted (they have no API cost). Exported from the top-level
+  package as `apple_basefm.token_session`.
+
+- **`_SessionAccumulator` dataclass** — mutable token counter with four integer
+  fields (`prompt_tokens`, `completion_tokens`, `total_tokens`, `call_count`).
+  Yielded by `token_session()` and accepted as the optional `accumulator=` argument
+  to resume accumulation across non-contiguous blocks. Exported from the top-level
+  package as `apple_basefm._SessionAccumulator`.
+
+- **`lm.usage` per-instance lifetime counter** — every `AppleLocalLM` and
+  `AppleFoundationLM` instance now exposes a `usage: _SessionAccumulator` attribute
+  that accumulates tokens for the lifetime of the object, independent of any
+  `token_session()` block.
+
+- **`lm.reset_usage()`** — resets the per-instance `usage` counter to zero without
+  creating a new object.
+
+- **Streaming paths now emit telemetry** — `AppleLocalLM` streaming sync and async
+  paths previously silently dropped token counts; they now call `forward_span()` and
+  `record_usage()`, bringing them to parity with the non-streaming path.
+
+- **`total_tokens` in structured logs and OTel spans** — `_StructuredFormatter` now
+  emits `total_tokens` as an extra field on DEBUG log records; `record_usage()` now
+  writes `gen_ai.usage.total_tokens` to OpenTelemetry spans.
+
+- **`apple_basefm/_session.py`** — new module implementing the session accumulation
+  system. No new runtime dependencies; uses only stdlib (`dataclasses`, `contextlib`,
+  `contextvars`).
+
+### Fixed
+
+- **`_infer_params_b('0B')` returned `0.0` instead of `None`** — the regex matched the
+  string `"0B"` and returned `float("0")`, violating the function's contract that any
+  returned value is a positive float. Zero-parameter counts now return `None`.
+
+---
+
 ## [0.2.0] — 2026-05-12
 
 ### Added

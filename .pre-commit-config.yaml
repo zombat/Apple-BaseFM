@@ -1,0 +1,36 @@
+repos:
+  # Ruff: fast Python linter + formatter (replaces flake8, isort, pyupgrade)
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.4.10
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # Mypy: static type checking
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.10.0
+    hooks:
+      - id: mypy
+        additional_dependencies: []
+        args: [--ignore-missing-imports]
+        # Only run mypy on the package source, not tests or scripts
+        files: ^apple_basefm/
+
+  # Security: no secrets committed
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: [--baseline, .secrets.baseline]
+        exclude: tests/
+
+  # Guard: project-specific governance scanner
+  - repo: local
+    hooks:
+      - id: guard
+        name: guard (governance scanner)
+        language: python
+        entry: python3 scripts/guard.py --strict
+        pass_filenames: false
+        always_run: true

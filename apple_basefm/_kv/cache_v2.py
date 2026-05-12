@@ -19,6 +19,7 @@ Design note — rotation correctness:
 from __future__ import annotations
 
 import logging
+import warnings
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
@@ -93,12 +94,18 @@ class TurboQuantV2Cache:
                 "space (Q @ (K·R)ᵀ ≠ Q @ Kᵀ). The compensating SDPA patch "
                 "(attention_v2.py) is not yet implemented. Attention scores will "
                 "differ from standard mlx-lm --kv-bits output. Use "
-                "use_rotation=False (LEAN mode) for strict numerical equivalence."
+                "use_rotation=False (LEAN mode) for strict numerical equivalence.",
+                extra={"backend": "mlx"},
             )
         if self.use_normalization:
-            logger.info(
-                "TurboQuantV2Cache: use_normalization=True is reserved for "
-                "attention_v2.py (future); currently a no-op."
+            warnings.warn(
+                "TurboQuantV2Cache(use_normalization=True) is a no-op. "
+                "The normalization path will be wired in attention_v2.py; "
+                "until then, this parameter has no effect. "
+                "Planned removal in v0.4 once attention_v2.py ships. "
+                "Pass use_normalization=False to suppress this warning.",
+                DeprecationWarning,
+                stacklevel=2,
             )
         # Lazy rotation matrix — computed once on first build() call, then reused.
         self._rotation = None
@@ -138,9 +145,9 @@ class TurboQuantV2Cache:
             )
         elif head_dim % self.group_size != 0:
             logger.warning(
-                "TurboQuantV2Cache: head_dim (%d) is not evenly divisible by "
-                "group_size (%d). MLX quantization behaviour for the last "
-                "partial group is model-version-dependent and may raise a "
+                "TurboQuantV2Cache: head_dim (%d) is not evenly divisible "
+                "by group_size (%d). MLX quantization behaviour for "
+                "the last partial group is model-version-dependent and may raise a "
                 "runtime error. Consider using a group_size that divides head_dim.",
                 head_dim,
                 self.group_size,
@@ -267,7 +274,23 @@ class _TurboQuantV2LayerCache:
         # caller above (mlx_lm.generate) would continue from a blank cache
         # producing garbage output. Instead, let the exception reach DSPy's
         # retry layer which restarts generation entirely (see docstring).
-        return self._inner.update_and_fetch(keys, values)
+        try:
+            return self._inner.update_and_fetch(keys, values)
+        except Exception as exc:
+            key_shape = getattr(keys, "shape", "?")
+            val_shape = getattr(values, "shape", "?")
+            key_dtype = getattr(keys, "dtype", "?")
+            val_dtype = getattr(values, "dtype", "?")
+            raise RuntimeError(
+                f"TurboQuant V2: inner.update_and_fetch failed — "
+                f"key shape={key_shape} dtype={key_dtype}, "
+                f"value shape={val_shape} dtype={val_dtype}. "
+                "This is typically caused by a tensor shape or dtype mismatch "
+                "between the model's KV projection and the cache configuration. "
+                "Verify bits/group_size are compatible with this model's head_dim, "
+                f"or re-construct TurboQuantV2Cache if the model was reloaded. "
+                f"Caused by: {exc}"
+            ) from exc
 
     @property
     def state(self):

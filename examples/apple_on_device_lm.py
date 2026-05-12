@@ -161,6 +161,53 @@ def pattern_4_apple_intelligence() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Pattern 5: Token session — cumulative usage tracking for cost forecasting
+# ---------------------------------------------------------------------------
+
+
+def pattern_5_token_session() -> None:
+    """Track cumulative token usage across multiple LM calls for cost forecasting.
+
+    token_session() accumulates prompt_tokens, completion_tokens, total_tokens,
+    and call_count across every LM call inside the block — standalone or DSPy.
+    Use these numbers to forecast migration cost to a paid API provider.
+    """
+    print("Tracks token usage across all LM calls in a block.")
+    print("Multiply totals by your target provider\'s pricing to forecast cost.\n")
+    import dspy
+
+    from apple_basefm import AppleLocalLM, token_session
+
+    lm = AppleLocalLM("mlx-community/Llama-3.2-3B-Instruct-4bit")
+    dspy.configure(lm=lm)
+
+    qa = dspy.Predict("question -> answer")
+
+    with token_session() as session:
+        # Standalone call
+        lm.forward(messages=[{"role": "user", "content": "What is the capital of France?"}])
+        # DSPy Predict call
+        qa(question="Explain photosynthesis in one sentence.")
+        # Another standalone call
+        lm.forward(messages=[{"role": "user", "content": "Name three planets."}])
+
+    print(f"[TokenSession] Calls:             {session.call_count}")
+    print(f"[TokenSession] Prompt tokens:     {session.prompt_tokens}")
+    print(f"[TokenSession] Completion tokens: {session.completion_tokens}")
+    print(f"[TokenSession] Total tokens:      {session.total_tokens}")
+    print()
+    # Example cost forecast: $3 / 1M input tokens, $15 / 1M output tokens
+    input_cost  = session.prompt_tokens     / 1_000_000 * 3.00
+    output_cost = session.completion_tokens / 1_000_000 * 15.00
+    print(f"[TokenSession] Estimated cost (claude-sonnet pricing):")
+    print(f"  Input:  ${input_cost:.6f}")
+    print(f"  Output: ${output_cost:.6f}")
+    print(f"  Total:  ${input_cost + output_cost:.6f}")
+    print()
+    print(f"[TokenSession] Per-instance lifetime totals: {lm.usage}")
+
+
+# ---------------------------------------------------------------------------
 # Entrypoint
 # ---------------------------------------------------------------------------
 
@@ -170,7 +217,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="apple-basefm usage examples")
     parser.add_argument(
         "--pattern",
-        choices=["1", "2", "3", "4", "all"],
+        choices=["1", "2", "3", "4", "5", "all"],
         default="all",
         help="Which pattern to run (default: all)",
     )
@@ -181,6 +228,7 @@ if __name__ == "__main__":
         "2": pattern_2_full_dspy,
         "3": pattern_3_mixed_pipeline,
         "4": pattern_4_apple_intelligence,
+        "5": pattern_5_token_session,
     }
 
     if args.pattern == "all":

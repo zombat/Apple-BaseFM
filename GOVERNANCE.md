@@ -1,9 +1,9 @@
 # Governance Review: apple-basefm
 
-**Date**: 2026-05-12
+**Date**: 2026-05-12 (updated: v0.3.0 observability + hardening pass)
 **Scope**: Full codebase — `apple_basefm/` package, `tests/`, `scripts/`, `.github/skills/` scripts.
 **Scanner**: `python3 scripts/guard.py --strict` (full project) and `--dir apple_basefm --strict` (package only)
-**Last scan**: 2026-05-12 (post TurboQuant V2 changes)
+**Last scan**: 2026-05-12 (post v0.3.0 changes — 0 net-new violations)
 
 ---
 
@@ -15,28 +15,14 @@
 Scanning /home/noot/dspy-apple …
 
 [HIGH] INJ-1  .github/skills/distribution/scripts/release.py:25
-  subprocess.run() called with shell=True. Use a list of arguments and shell=False to prevent command injection.
-  > r = subprocess.run(
-
+  subprocess.run() called with shell=True.
 [HIGH] INJ-1  .github/skills/planning/scripts/recon.py:31
-  subprocess.run() called with shell=True. Use a list of arguments and shell=False to prevent command injection.
-  > r = subprocess.run(
-
+  subprocess.run() called with shell=True.
 [HIGH] INJ-1  .github/skills/production/scripts/check.py:34
-  subprocess.run() called with shell=True. Use a list of arguments and shell=False to prevent command injection.
-  > r = subprocess.run(
-
-[WARNING] JSON-1  tests/test_cli.py:211
-  json.loads() called outside a try/except block.
-  > parsed = json.loads(out)
-
-[WARNING] JSON-1  tests/test_cli.py:340
-  json.loads() called outside a try/except block.
-  > parsed = json.loads(out)
-
-[WARNING] JSON-1  tests/test_cli.py:502
-  json.loads() called outside a try/except block.
-  > parsed = json.loads(out)
+  subprocess.run() called with shell=True.
+[WARNING] JSON-1  tests/test_cli.py:211 — json.loads() outside try/except
+[WARNING] JSON-1  tests/test_cli.py:340 — json.loads() outside try/except
+[WARNING] JSON-1  tests/test_cli.py:502 — json.loads() outside try/except
 
 Found 6 violation(s): 3 HIGH, 3 WARNING
 ```
@@ -182,7 +168,29 @@ system_profiler JSON          _chip_name_from_system_profiler json.loads() in tr
 sysctl output                 _run_sysctl()                   int(raw) in try/except ValueError
 TurboQuantV2Cache params      __post_init__()                 ValueError for out-of-range bits/group_size/step
 AppleLocalLM params           __init__()                      ValueError for backend/max_concurrency; TypeError for kv_cache
+OSLogHandler / configure_logging  _logging.py                 level validated (getattr → TypeError if unknown string)
+OTel forward_span             _telemetry.py                   lazy-import; exception in span body recorded + re-raised
 ```
+
+### New Modules Added in v0.3.0
+
+#### `_logging.py` — OSLogHandler, configure_logging
+
+| Check | Status | Notes |
+|---|---|---|
+| `configure_logging(level=...)` validates the level string | ✅ Pass | `getattr(logging, level.upper(), None)` with `isinstance` guard; raises `ValueError` for unknown strings |
+| `OSLogHandler` message encoding uses `errors="replace"` | ✅ Pass | Invalid UTF-8 characters are replaced rather than raising UnicodeEncodeError |
+| `ctypes.CDLL` failure handled gracefully | ✅ Pass | Any exception in `_build_oslog_handler()` returns `NullHandler`; never propagates to caller |
+| No user-controlled data used in `os_log_create` subsystem/category | ✅ Pass | Subsystem is hardcoded (`com.apple-basefm`); category derives from `record.name` (internal logger name, not user input) |
+
+#### `_telemetry.py` — OTel forward_span, record_usage
+
+| Check | Status | Notes |
+|---|---|---|
+| `opentelemetry-api` absence handled at first use, not import time | ✅ Pass | `_otel_tracer()` catches `ImportError` and caches the `False` result; zero import-time cost |
+| Span attribute values are typed scalars, not user-controlled strings | ✅ Pass | model is the instance's `self.model` (set at construction); max_tokens is `int | None`; backend is a hardcoded literal |
+| Exceptions in `record_usage` never propagate | ✅ Pass | Wrapped in bare `except Exception: pass` — telemetry must never take down the main call path |
+| Exceptions in the `forward_span` body are recorded and re-raised | ✅ Pass | `span.record_exception(exc); raise` — span gets the error, caller still sees the exception |
 
 ---
 
@@ -285,4 +293,64 @@ Hub: snapshot_download()      snapshot_download(repo_id, rev)    No local_dir �
 Filesystem: returned path     print(result_path)                 Verbatim stdout only; not logged via logger
 Env: HF_TOKEN                 huggingface_hub internals          Never logged; error messages strip auth context
 Hardware: free_disk_gb        detect_hardware().free_disk_gb     Compared in GB; catalog value preferred for size
+```
+
+---
+
+## Governance Review: v0.3.0 Observability & Hardening
+
+**Date**: 2026-05-12
+**Scope**: New modules `_logging.py`, `_telemetry.py`; modified `_kv/rotation.py`, `_kv/cache_v2.py`, `apple_fm.py`, `apple_local.py`
+**Post-implementation re-scan**: 0 net-new violations (same 6 pre-existing findings above)
+
+### KV Edge Case Fixes
+
+| ID | Fix | Location | Status |
+|---|---|---|---|
+| I-1 | `head_dim < 1` guard before any MLX import | `make_rotation_matrix()` | ✅ Fixed |
+| F-1 | Broadened `except (AttributeError, TypeError)` with string-match on `qr`/`linalg` | `rotation.py` | ✅ Fixed |
+| C-2 | `use_normalization=True` no-op → `DeprecationWarning(stacklevel=2)` | `TurboQuantV2Cache.__post_init__` | ✅ Fixed |
+| I-2 | `group_size % head_dim != 0` → `UserWarning(stacklevel=2)` | `TurboQuantV2Cache.build()` | ✅ Fixed |
+| D-1, D-2 | `try/except` wrapping `inner.update_and_fetch()` with shape/dtype/dtype context on error | `_TurboQuantV2LayerCache.update_and_fetch()` | ✅ Fixed |
+
+### Deprecation Warning Governance
+
+`warnings.warn()` calls introduced in v0.3.0 use `stacklevel=2` so tracebacks point at the caller site, not package internals. Both are suppressible by the caller.
+
+| Warning | Type | Location | Stacklevel |
+|---|---|---|---|
+| `use_normalization=True` is a no-op; planned removal v0.4 | `DeprecationWarning` | `TurboQuantV2Cache.__post_init__` | 2 |
+| `group_size % head_dim != 0` produces non-integer block count | `UserWarning` | `TurboQuantV2Cache.build()` | 2 |
+
+### New Module: `_logging.py`
+
+**Trust boundary**: No external data enters. `OSLogHandler.emit()` receives a `logging.LogRecord` produced by the Python logging machinery from trusted internal code — not from user input. The ctypes call to `_os_log_impl` passes only the formatted message string.
+
+| Check | Status | Notes |
+|---|---|---|
+| `configure_logging(level=...)` validates the level string | ✅ Pass | `getattr(logging, level.upper(), None)` + `isinstance` guard; raises `ValueError` for unknown strings |
+| Message encoding uses `errors="replace"` | ✅ Pass | Invalid UTF-8 characters are replaced rather than raising `UnicodeEncodeError` |
+| `ctypes.CDLL` failure handled gracefully | ✅ Pass | Any exception in `_build_oslog_handler()` returns `NullHandler`; never propagates to caller |
+| No user-controlled data used in `os_log_create` subsystem/category | ✅ Pass | Subsystem is hardcoded (`com.apple-basefm`); category derives from `record.name` (internal logger name, not user input) |
+
+### New Module: `_telemetry.py`
+
+**Trust boundary**: No external data enters. `forward_span()` receives `model` (from `self.model`, set at construction), `backend` (hardcoded literal), and `max_tokens` (`int | None`, validated at construction). `record_usage()` receives an `_FMUsage` object produced internally. All span attributes are internal values.
+
+| Check | Status | Notes |
+|---|---|---|
+| `opentelemetry-api` absence handled at first use, not import time | ✅ Pass | `_otel_tracer()` catches `ImportError` and caches `False`; zero import-time cost |
+| Span attributes are typed scalars, not user-controlled strings | ✅ Pass | `model` is set at construction; `max_tokens` is `int | None`; `backend` is a hardcoded literal |
+| `record_usage` exceptions never propagate | ✅ Pass | Wrapped in `except Exception: pass` — telemetry must not take down the main call path |
+| Exceptions in the `forward_span` body are recorded and re-raised | ✅ Pass | `span.record_exception(exc); raise` — span gets the error; caller still sees the exception |
+
+### Updated Boundary Map (v0.3.0 additions)
+
+```
+Module / Entry Point                  Trust Boundary              Guard
+────────────────────────              ──────────────────          ──────────────────────────────────────
+configure_logging(level=)             _logging.py                 getattr(logging, level.upper()) + ValueError on miss
+OSLogHandler.emit(record)             _logging.py                 record from Python logging machinery (internal)
+forward_span(model=, backend=, ...)   _telemetry.py               All inputs internal; no user-controlled data
+record_usage(span, usage)             _telemetry.py               getattr with None fallback; int() cast
 ```

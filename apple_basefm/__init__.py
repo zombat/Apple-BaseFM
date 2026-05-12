@@ -22,8 +22,10 @@ from apple_basefm._catalog import ModelEntry, SuggestResult, suggest_models
 from apple_basefm._cli import MLXModelInfo, list_mlx_models
 from apple_basefm._compat import DSPY_AVAILABLE
 from apple_basefm._hardware import HardwareInfo, detect_hardware
+from apple_basefm._logging import OSLogHandler, configure_logging
+from apple_basefm._session import _SessionAccumulator, token_session
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 __all__ = [
     "AppleFoundationLM",
     "AppleLocalLM",
@@ -31,9 +33,13 @@ __all__ = [
     "HardwareInfo",
     "MLXModelInfo",
     "ModelEntry",
+    "OSLogHandler",
     "SuggestResult",
+    "configure_logging",
     "detect_hardware",
     "list_mlx_models",
     "suggest_models",
+    "token_session",
+    "_SessionAccumulator",
     "__version__",
 ]

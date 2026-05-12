@@ -12,6 +12,7 @@ from typing import Any
 
 from apple_basefm._compat import BaseLM
 from apple_basefm._response import _FMChoice, _FMMessage, _FMResponse, _FMUsage
+from apple_basefm._session import _SessionAccumulator, _accumulate
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,14 @@ class _AppleBaseLM(BaseLM):
     instantiation — use one of the concrete subclasses instead.
     """
 
+    def __init__(self, **kwargs: Any) -> None:
+        self.usage = _SessionAccumulator()
+        super().__init__(**kwargs)
+
+    def reset_usage(self) -> None:
+        """Reset the per-instance lifetime token counter to zero."""
+        self.usage = _SessionAccumulator()
+
     @staticmethod
     def _raise_for_guardrail(exc: Exception) -> None:
         """Re-raise exc as a descriptive RuntimeError if it is a guardrail violation.
@@ -146,6 +155,9 @@ class _AppleBaseLM(BaseLM):
     def _build_response(self, text: str, usage: _FMUsage | None = None) -> _FMResponse:
         """Wrap a raw text string in an OpenAI-compatible _FMResponse.
 
+        Also updates ``self.usage`` (per-instance lifetime counter) and the
+        active ``token_session()`` accumulator, if one is set.
+
         Args:
             text: The model's generated text.
             usage: Pre-computed token-usage statistics. Pass None to get zeroed
@@ -164,12 +176,24 @@ class _AppleBaseLM(BaseLM):
                 "Model returned an empty response. The prompt may have been too long, "
                 "or the model may have generated only whitespace. Try rephrasing."
             )
-        return _FMResponse(
+        response = _FMResponse(
             choices=[_FMChoice(message=_FMMessage(content=text))],
             usage=usage or _FMUsage(),
             model=self.model,
             _hidden_params={"response_cost": 0.0},
         )
+        try:
+            u = response.usage
+            p = max(0, int(getattr(u, "prompt_tokens", 0)))
+            c = max(0, int(getattr(u, "completion_tokens", 0)))
+            self.usage.prompt_tokens += p
+            self.usage.completion_tokens += c
+            self.usage.total_tokens += p + c
+            self.usage.call_count += 1
+            _accumulate(u)
+        except Exception:
+            pass
+        return response
 
 
 __all__ = ["_flatten_messages", "_run_async", "_AppleBaseLM"]

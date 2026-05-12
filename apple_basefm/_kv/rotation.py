@@ -32,9 +32,15 @@ def make_rotation_matrix(head_dim: int):
         An (head_dim, head_dim) orthogonal array in the active MLX default dtype.
 
     Raises:
+        ValueError: If head_dim is less than 1.
         RuntimeError: If mlx is not installed, or if MLX < 0.16 is detected
-            (mx.linalg.qr is not available before 0.16).
+            (mx.linalg.qr is not available before 0.16), or if QR
+            decomposition fails for any other reason (e.g. bad tensor shape).
     """
+    if head_dim < 1:
+        raise ValueError(
+            f"make_rotation_matrix: head_dim must be >= 1, got {head_dim!r}."
+        )
     try:
         import mlx.core as mx
     except ImportError as exc:
@@ -59,18 +65,26 @@ def make_rotation_matrix(head_dim: int):
         logger.info(
             "Generated %dx%d QR rotation matrix for KV cache in %.3fs",
             head_dim, head_dim, elapsed,
+            extra={"elapsed_ms": round(elapsed * 1000, 2), "backend": "mlx"},
         )
-    except AttributeError as exc:
-        if "qr" in str(exc).lower():
+    except (AttributeError, TypeError) as exc:
+        exc_str = str(exc).lower()
+        if "qr" in exc_str or "linalg" in exc_str:
             raise RuntimeError(
                 "mx.linalg.qr requires MLX >= 0.16. "
                 "Upgrade with: pip install 'mlx-lm>=0.22.0'"
             ) from exc
-        raise
+        raise RuntimeError(
+            f"make_rotation_matrix failed for head_dim={head_dim}: {exc}"
+        ) from exc
     except Exception as exc:
         raise RuntimeError(
             f"make_rotation_matrix failed for head_dim={head_dim}: {exc}"
         ) from exc
 
-    logger.debug("Generated %dx%d QR rotation matrix for KV cache", head_dim, head_dim)
+    logger.debug(
+        "Generated %dx%d QR rotation matrix for KV cache",
+        head_dim, head_dim,
+        extra={"backend": "mlx"},
+    )
     return Q
