@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **TurboQuant V2 KV cache backend** (`apple_basefm._kv`) — optional KV cache
+  compression for `AppleLocalLM`. New `kv_cache` parameter accepts string presets
+  (`"turboquant-v2"`, `"turboquant-v2-lean"`) or a custom `KVCacheStrategy` instance.
+  - `KVCacheStrategy` — `@runtime_checkable` Protocol; any conforming object is accepted.
+  - `TurboQuantV2Cache` — wraps `mlx_lm.models.cache.QuantizedKVCache` (bits ∈ {2, 4, 8},
+    configurable `group_size` and `step`). Optional QR rotation distributes outliers
+    before quantization for lower error at the same bit width.
+  - `make_rotation_matrix(head_dim)` — deterministic QR rotation via `mx.linalg.qr`;
+    seeded at 42, lazy-cached on the `TurboQuantV2Cache` instance across `forward()` calls.
+  - Achieves ~3.6× KV memory reduction at 4-bit (969 MB → 266 MB at T=8192 context).
+    Generation speed is effectively unchanged; benefit is sustained throughput as context
+    grows in DSPy optimizer loops.
+
+- **README: Apple Silicon memory guide** — per-RAM-tier model recommendations with and
+  without TurboQuant V2; stack comparison (mlx-lm raw vs. TurboQuant V2) covering
+  generation speed and memory overhead; practical guidance for DSPy optimizer workloads.
+
+---
+
 ## [0.1.0] — 2026-05-11
 
 ### Added
