@@ -65,6 +65,19 @@ Repository = "https://github.com/zombat/Apple-BaseFM"
 [tool.hatch.build.targets.wheel]
 packages = ["apple_basefm"]
 
+[tool.hatch.build.targets.sdist]
+exclude = [
+    ".hypothesis/",
+    ".github/",
+    "tests/",
+    "scripts/",
+    "examples/",
+    ".gitignore",
+    ".vscode/",
+    "EDGECASES.md",
+    "GOVERNANCE.md",
+]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests", "tests/fuzz"]

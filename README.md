@@ -25,19 +25,19 @@ or usable standalone with a minimal stub when it is not.
 ### Minimal (standalone, no DSPy)
 
 ```bash
-pip install git+https://github.com/zombat/Apple-BaseFM.git
+pip install apple-basefm
 ```
 
 ### With DSPy
 
 ```bash
-pip install "apple-basefm[dspy] @ git+https://github.com/zombat/Apple-BaseFM.git"
+pip install "apple-basefm[dspy]"
 ```
 
 ### MLX backend (local models)
 
 ```bash
-pip install "apple-basefm[mlx,dspy] @ git+https://github.com/zombat/Apple-BaseFM.git"
+pip install "apple-basefm[mlx,dspy]"
 ```
 
 ### Apple Foundation Models (`AppleFoundationLM`)
@@ -46,7 +46,7 @@ Install on a Mac running macOS 26+ with Apple Intelligence enabled.
 Setup guide: https://apple.github.io/python-apple-fm-sdk/getting_started.html
 
 ```bash
-pip install "apple-basefm[foundation,apple-fm-sdk,dspy] @ git+https://github.com/zombat/Apple-BaseFM.git"
+pip install "apple-basefm[foundation,apple-fm-sdk,dspy]"
 ```
 
 ---
@@ -198,7 +198,7 @@ from apple_basefm import AppleLocalLM
 # Preset strings (recommended)
 lm = AppleLocalLM(
     "mlx-community/Meta-Llama-3.1-70B-Instruct-4bit",
-    kv_cache="turboquant-v2",      # 4-bit + QR rotation (recommended)
+    kv_cache="turboquant-v2",      # 4-bit, no rotation until attention_v2 ships
 )
 
 # LEAN mode — no rotation, numerically identical to mlx-lm --kv-bits 4
@@ -218,8 +218,8 @@ lm = AppleLocalLM(
 
 | Preset | Bits | Rotation | Notes |
 |---|---|---|---|
-| `"turboquant-v2"` | 4 | Yes (QR) | Recommended; distributes outliers before quantizing |
-| `"turboquant-v2-lean"` | 4 | No | Numerically identical to `mlx-lm --kv-bits 4`; fastest |
+| `"turboquant-v2"` | 4 | No (pending) | Recommended default; rotation will be enabled automatically when `attention_v2` ships |
+| `"turboquant-v2-lean"` | 4 | No | Permanent stable alias; always `use_rotation=False`, numerically identical to `mlx-lm --kv-bits 4` |
 
 `TurboQuantV2Cache` valid values: `bits` ∈ `{2, 4, 8}`, `group_size` ≥ 1, `step` ≥ 1.
 
@@ -456,6 +456,7 @@ export HF_TOKEN=hf_xxxxxxxxxxxxxxxxxxxx
 
 | apple-basefm | DSPy | Python | macOS (local models) | macOS (Foundation) |
 |---|---|---|---|---|
+| 0.2.x | ≥ 2.5.0 | ≥ 3.11 | 14+ (Apple Silicon) | 26+ (Apple Intelligence) |
 | 0.1.x | ≥ 2.5.0 | ≥ 3.11 | 14+ (Apple Silicon) | 26+ (Apple Intelligence) |
 
 ---
