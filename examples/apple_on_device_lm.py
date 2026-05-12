@@ -138,16 +138,21 @@ def pattern_4_apple_intelligence() -> None:
         lm = AppleFoundationLM()
         dspy.configure(lm=lm)
 
-        from pydantic import BaseModel
-
-        class Sentiment(BaseModel):
-            label: str
-            confidence: float
-
-        qa = dspy.Predict("text -> sentiment_label, confidence_score")
-        result = qa(text="I absolutely love the new Apple Silicon chips!")
-        print("[Foundation] Sentiment:", result.sentiment_label)
-        print("[Foundation] Confidence:", result.confidence_score)
+        sentiment_analyzer = dspy.Predict("text -> sentiment_label, confidence_score")
+        responder = dspy.Predict("question -> answer")
+        
+        prompt = "I absolutely love the new Apple Silicon chips! Tell me more about their performance."
+        
+        # Analyze sentiment of the input
+        sentiment_result = sentiment_analyzer(text=prompt)
+        
+        # Generate a response
+        response_result = responder(question=prompt)
+        
+        print("[Foundation] Prompt:", prompt)
+        print("[Foundation] Response:", response_result.answer)
+        print("[Foundation] Sentiment:", sentiment_result.sentiment_label)
+        print("[Foundation] Confidence:", sentiment_result.confidence_score)
     except (ImportError, RuntimeError) as exc:
         print(f"[Foundation] Not available: {exc}")
 
