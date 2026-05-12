@@ -6,7 +6,10 @@ pattern in _kv/ is exercised correctly.
 
 conftest.py provides:
   - fake_mlx_modules  (autouse) — mlx_lm + mlx_lm.models.cache in sys.modules
-  - fake_mlx_core     (session scoped) — mlx.core and mlx.linalg in sys.modules
+  - fake_mlx_core     (autouse) — mlx.core and mlx.linalg in sys.modules
+
+Test markers:
+  - pytest.mark.unit  — all tests in this file
 """
 from __future__ import annotations
 
@@ -17,6 +20,8 @@ from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
+
+pytestmark = pytest.mark.unit
 
 
 # ---------------------------------------------------------------------------
@@ -193,6 +198,24 @@ class TestTurboQuantV2CacheDescribe:
         c = TurboQuantV2Cache(bits=4, use_rotation=False)
         assert "LEAN" in c.describe()
 
+    def test_describe_includes_bits_for_2bit(self) -> None:
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        c = TurboQuantV2Cache(bits=2, use_rotation=False)
+        assert "2" in c.describe()
+
+    def test_describe_includes_bits_for_8bit(self) -> None:
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        c = TurboQuantV2Cache(bits=8, use_rotation=True)
+        assert "8" in c.describe()
+
+    def test_describe_includes_group_size(self) -> None:
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        c = TurboQuantV2Cache(bits=4, group_size=32, use_rotation=False)
+        assert "32" in c.describe()
+
 
 # ---------------------------------------------------------------------------
 # TurboQuantV2Cache.build()
@@ -245,6 +268,25 @@ class TestTurboQuantV2CacheBuild:
         second = c.build(n_layers=2, head_dim=64)
         assert first is not second
         assert first[0] is not second[0]  # independent layer cache objects
+
+    def test_build_propagates_bits_group_size_step(self) -> None:
+        """Layer caches must receive the bits, group_size, and step from the parent."""
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        c = TurboQuantV2Cache(bits=2, group_size=32, step=128, use_rotation=False)
+        layers = c.build(n_layers=1, head_dim=64)
+        layer = layers[0]
+        assert layer._bits == 2
+        assert layer._group_size == 32
+        assert layer._step == 128
+
+    def test_build_group_size_larger_than_head_dim_does_not_raise(self) -> None:
+        """group_size > head_dim is allowed — mlx handles it at quantize time."""
+        from apple_basefm._kv import TurboQuantV2Cache
+
+        c = TurboQuantV2Cache(bits=4, group_size=128, use_rotation=False)
+        layers = c.build(n_layers=2, head_dim=64)  # group_size > head_dim
+        assert len(layers) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -310,6 +352,60 @@ class TestLayerCacheUpdateAndFetch:
         lc = _TurboQuantV2LayerCache(bits=4, group_size=64, step=512, rotation=None)
         lc._ensure_inner()
         assert lc._inner.step == 512
+
+    def test_ensure_inner_is_idempotent(self) -> None:
+        """Calling _ensure_inner() twice must not replace the existing inner cache."""
+        from apple_basefm._kv.cache_v2 import _TurboQuantV2LayerCache
+
+        lc = _TurboQuantV2LayerCache(bits=4, group_size=64, step=256, rotation=None)
+        lc._ensure_inner()
+        first_inner = lc._inner
+        lc._ensure_inner()
+        assert lc._inner is first_inner
+
+    def test_bits_propagated_to_inner_cache(self) -> None:
+        """bits=2 and bits=8 must be forwarded to QuantizedKVCache."""
+        from apple_basefm._kv.cache_v2 import _TurboQuantV2LayerCache
+
+        for bits in (2, 8):
+            lc = _TurboQuantV2LayerCache(bits=bits, group_size=64, step=256, rotation=None)
+            lc._ensure_inner()
+            assert lc._inner.bits == bits
+
+    def test_non_identity_rotation_transforms_keys(self) -> None:
+        """A 90° rotation permutation must change the key values passed to inner."""
+        from apple_basefm._kv.cache_v2 import _TurboQuantV2LayerCache
+
+        head_dim = 4
+        # Permutation matrix — rotates axes but preserves norms
+        rotation = np.array([[0, 1, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1], [1, 0, 0, 0]],
+                            dtype=float)
+        lc = _TurboQuantV2LayerCache(bits=4, group_size=4, step=256, rotation=rotation)
+
+        keys = np.array([[[[1, 2, 3, 4]]]], dtype=float)  # shape (1,1,1,4)
+        values = np.zeros((1, 1, 1, head_dim))
+
+        # Capture what inner receives by recording update_and_fetch calls
+        received: list[Any] = []
+        original_uaf = lc._ensure_inner
+
+        def _patched_ensure():
+            original_uaf()
+            orig = lc._inner.update_and_fetch
+
+            def _capture(k, v):
+                received.append((k.copy(), v.copy()))
+                return orig(k, v)
+
+            lc._inner.update_and_fetch = _capture  # type: ignore[method-assign]
+
+        lc._ensure_inner = _patched_ensure  # type: ignore[method-assign]
+        lc.update_and_fetch(keys, values)
+
+        assert len(received) == 1
+        # After permutation rotation: [1,2,3,4] @ P = [4,1,2,3]
+        # P column-j picks row-j of input, so output[j] = input[P_col_j]
+        np.testing.assert_array_almost_equal(received[0][0], [[[[4, 1, 2, 3]]]])
 
 
 # ---------------------------------------------------------------------------

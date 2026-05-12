@@ -42,6 +42,7 @@ mlx = ["mlx-lm>=0.22.0"]
 dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
+    "hypothesis>=6.100",
     "ruff>=0.4",
     "mypy>=1.10",
     "dspy-ai>=2.5.0",
@@ -60,8 +61,14 @@ packages = ["apple_basefm"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-testpaths = ["tests"]
+testpaths = ["tests", "tests/fuzz"]
 norecursedirs = ["tests/integration"]
+markers = [
+    "unit: fast isolated tests with no external dependencies",
+    "integration: tests requiring real infrastructure or hardware",
+    "smoke: end-to-end tests against a running instance",
+    "fuzz: property-based or randomised input tests (hypothesis)",
+]
 
 [tool.ruff]
 line-length = 100
