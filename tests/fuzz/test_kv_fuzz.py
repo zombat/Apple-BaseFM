@@ -20,11 +20,19 @@ import sys
 import types
 from typing import Any
 
-import numpy as np
 import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 from hypothesis import HealthCheck
+
+# Skip this entire file on environments without numpy (e.g. non-Apple-Silicon CI).
+# The KV fuzz mocks use numpy arrays as stand-ins for MLX arrays.
+# Run with: pip install numpy  or  pip install 'apple-basefm[mlx]'
+np = pytest.importorskip(
+    "numpy",
+    reason="KV fuzz tests require numpy (Apple Silicon / mlx extra). "
+           "Install with: pip install numpy",
+)
 
 pytestmark = pytest.mark.fuzz
 

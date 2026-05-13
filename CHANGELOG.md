@@ -7,6 +7,65 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [1.0.0] — 2026-05-13
+
+### Added
+
+- **`apple_basefm._kv.attention_v2`** — SDPA patch for TurboQuant V2 rotated KV
+  cache. `install(R)` patches `mlx.fast.scaled_dot_product_attention` to apply
+  `Q @ R` before scoring, so that `(Q·R) @ (K·R)ᵀ = Q @ Kᵀ` exactly.
+  `uninstall()` restores the original. `rotated_sdpa_context(R)` wraps both in a
+  `try/finally` context manager (the entry point used by `AppleLocalLM`).
+  `is_installed()` allows callers to query patch state.
+
+- **`TurboQuantV2Cache.rotation_matrix` property** — exposes the lazily-computed
+  rotation matrix so `AppleLocalLM` can retrieve it without `isinstance` checks.
+
+- **`rotated_sdpa_context` auto-installed by `AppleLocalLM`** — both `forward()`
+  and `aforward()` retrieve the rotation matrix after `build()` and wrap generation
+  calls with `rotated_sdpa_context`. Covers the sync path, the
+  `send_stream`-streaming path, and the async streaming path.
+
+- **16 new tests in `tests/test_attention_v2.py`** — install/uninstall lifecycle,
+  context manager cleanup on exception, and correctness: `(Q@R) @ (K@R).T == Q @ K.T`
+  holds to float32 tolerance.
+
+### Changed
+
+- **`"turboquant-v2"` preset now uses `use_rotation=True`** — QR rotation is
+  enabled by default now that `attention_v2` ships. Users who need strict numerical
+  equivalence to `mlx-lm --kv-bits 4` should pin `"turboquant-v2-lean"`, which
+  permanently stays `use_rotation=False`.
+
+- **`BaseLM` stub (`_compat.py`) now stores `self.cache`** — when DSPy is not
+  installed the minimal stub previously discarded the `cache` kwarg, causing
+  `AttributeError: 'AppleLocalLM' object has no attribute 'cache'` on every
+  `forward()` call. Fixed by persisting `self.cache = kwargs.get("cache", True)`.
+
+- **`use_normalization` deprecation message updated** — no longer references
+  "until attention_v2.py ships" since rotation is the shipped outlier-reduction
+  path. Normalization remains a future-only no-op.
+
+- **Development Status classifier** updated from `3 - Alpha` to `5 - Production/Stable`.
+
+### Fixed
+
+- **KV test collection crash on Linux** — `import numpy` at module level in
+  `tests/test_kv_cache.py` and `tests/fuzz/test_kv_fuzz.py` caused
+  `ModuleNotFoundError` at pytest collection time (not a graceful skip). Both files
+  now use `pytest.importorskip("numpy")`.
+
+- **Pydantic-gated tests now skip gracefully** — 12 test methods in
+  `test_apple_fm.py` and `test_exception_handlers.py` that inline-import `pydantic`
+  now use `pytest.importorskip("pydantic")` so they skip cleanly instead of
+  crashing when pydantic is not installed.
+
+- **`test_get_send_stream_logs_debug_on_failure` caplog test** — the test now
+  patches `compat.DSPY_AVAILABLE = True` so the code path under test is actually
+  reached.
+
+---
+
 ## [0.3.0] — 2026-05-12
 
 ### Added

@@ -102,6 +102,7 @@ class TestCompatShimsReturnNoneOnDspyError:
         broken = _BrokenDspySettings()
         with (
             patch.dict(sys.modules, {"dspy": broken}),  # type: ignore[arg-type]
+            patch.object(compat, "DSPY_AVAILABLE", True),
             caplog.at_level(logging.DEBUG, logger="apple_basefm._compat"),
         ):
             compat.get_send_stream()
@@ -125,6 +126,7 @@ class TestPydanticToGenerableExceptionPaths:
         self, fake_apple_fm_sdk: types.ModuleType
     ) -> None:
         """When fm.guide() raises, _pydantic_to_generable must not propagate the error."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         from pydantic import BaseModel, Field
 
         fake_apple_fm_sdk.guide = MagicMock(side_effect=RuntimeError("sdk boom"))  # type: ignore[attr-defined]
@@ -140,6 +142,7 @@ class TestPydanticToGenerableExceptionPaths:
         self, fake_apple_fm_sdk: types.ModuleType, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The exc text must appear in the warning log (not silently dropped)."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         import logging
 
         from pydantic import BaseModel, Field
@@ -158,6 +161,7 @@ class TestPydanticToGenerableExceptionPaths:
         self, fake_apple_fm_sdk: types.ModuleType
     ) -> None:
         """If @generable compilation raises, _pydantic_to_generable must return None."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         from pydantic import BaseModel
 
         fake_apple_fm_sdk.generable = MagicMock(side_effect=TypeError("generable boom"))  # type: ignore[attr-defined]
@@ -172,6 +176,7 @@ class TestPydanticToGenerableExceptionPaths:
         self, fake_apple_fm_sdk: types.ModuleType, caplog: pytest.LogCaptureFixture
     ) -> None:
         """The exc text for @generable failure must appear in the warning log."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         import logging
 
         from pydantic import BaseModel

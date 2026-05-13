@@ -18,8 +18,16 @@ import types
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-import numpy as np
 import pytest
+
+# Skip this entire file on environments without numpy (e.g. non-Apple-Silicon CI).
+# The KV cache mocks use numpy arrays as stand-ins for MLX arrays.
+# Run with: pip install numpy  or  pip install 'apple-basefm[mlx]'
+np = pytest.importorskip(
+    "numpy",
+    reason="KV cache tests require numpy (Apple Silicon / mlx extra). "
+           "Install with: pip install numpy",
+)
 
 pytestmark = pytest.mark.unit
 
@@ -322,15 +330,18 @@ class TestTurboQuantV2CacheBuild:
             c.build(n_layers=1, head_dim=64)  # 64 % 48 != 0
         assert any("not evenly divisible" in r.message for r in caplog.records)
 
-    def test_use_rotation_true_emits_warning(self, caplog) -> None:
-        """Constructing TurboQuantV2Cache with use_rotation=True should emit a WARNING."""
-        import logging
+    def test_use_rotation_true_no_warning(self) -> None:
+        """Constructing TurboQuantV2Cache with use_rotation=True must not emit a UserWarning.
+
+        The SDPA patch is implemented; AppleLocalLM installs it automatically.
+        """
+        import warnings
 
         from apple_basefm._kv import TurboQuantV2Cache
 
-        with caplog.at_level(logging.WARNING, logger="apple_basefm._kv.cache_v2"):
-            TurboQuantV2Cache(use_rotation=True)
-        assert any("rotated" in r.message.lower() or "attention_v2" in r.message for r in caplog.records)
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UserWarning)
+            TurboQuantV2Cache(use_rotation=True)  # must not raise
 
 
 # ---------------------------------------------------------------------------
@@ -600,7 +611,7 @@ class TestAppleLocalLMKvCache:
 
         lm = _make_local_instance(apple_local_mod, kv_cache="turboquant-v2")
         assert isinstance(lm._kv_strategy, TurboQuantV2Cache)
-        assert lm._kv_strategy.use_rotation is False  # preset uses LEAN until attention_v2.py ships
+        assert lm._kv_strategy.use_rotation is True  # rotation enabled since v1.0.0
         assert lm._head_dim == 64
         assert lm._n_layers == 1
 

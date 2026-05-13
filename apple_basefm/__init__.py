@@ -25,7 +25,7 @@ from apple_basefm._hardware import HardwareInfo, detect_hardware
 from apple_basefm._logging import OSLogHandler, configure_logging
 from apple_basefm._session import _SessionAccumulator, token_session
 
-__version__ = "0.3.0"
+__version__ = "1.0.0"
 __all__ = [
     "AppleFoundationLM",
     "AppleLocalLM",

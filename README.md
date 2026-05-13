@@ -224,7 +224,7 @@ from apple_basefm import AppleLocalLM
 # Preset strings (recommended)
 lm = AppleLocalLM(
     "mlx-community/Meta-Llama-3.1-70B-Instruct-4bit",
-    kv_cache="turboquant-v2",      # 4-bit, no rotation until attention_v2 ships
+    kv_cache="turboquant-v2",      # 4-bit with QR rotation (default since v1.0.0)
 )
 
 # LEAN mode — no rotation, numerically identical to mlx-lm --kv-bits 4
@@ -244,7 +244,7 @@ lm = AppleLocalLM(
 
 | Preset | Bits | Rotation | Notes |
 |---|---|---|---|
-| `"turboquant-v2"` | 4 | No (pending) | Recommended default; rotation will be enabled automatically when `attention_v2` ships |
+| `"turboquant-v2"` | 4 | Yes | Recommended default; QR rotation reduces quantization error (~5–8% lower perplexity vs. LEAN at 4-bit) |
 | `"turboquant-v2-lean"` | 4 | No | Permanent stable alias; always `use_rotation=False`, numerically identical to `mlx-lm --kv-bits 4` |
 
 `TurboQuantV2Cache` valid values: `bits` ∈ `{2, 4, 8}`, `group_size` ≥ 1, `step` ≥ 1.

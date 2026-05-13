@@ -11,7 +11,7 @@ Public API::
 """
 from ._base import KVCacheStrategy
 from .cache_v2 import TurboQuantV2Cache
-# attention_v2 is intentionally NOT imported here — it raises NotImplementedError
-# at module level (deferred stub). Importing it would break the entire _kv package.
+# attention_v2 is not imported here — it lazily imports mlx.fast which is
+# unavailable on Linux. Import it directly: from apple_basefm._kv import attention_v2
 
 __all__ = ["KVCacheStrategy", "TurboQuantV2Cache"]

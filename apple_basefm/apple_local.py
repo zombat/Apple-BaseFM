@@ -71,7 +71,7 @@ _SUPPORTED_BACKENDS = ("mlx", "coreml")
 # causes attention scores to be computed in rotated K/V space, which is not
 # numerically equivalent to standard mlx-lm --kv-bits output.
 _KV_PRESETS: dict[str, Any] = {
-    "turboquant-v2":      lambda: TurboQuantV2Cache(bits=4, use_rotation=False),  # → True when attention_v2.py ships
+    "turboquant-v2":      lambda: TurboQuantV2Cache(bits=4, use_rotation=True),   # rotation enabled (attention_v2 ships in v1.0.0)
     "turboquant-v2-lean": lambda: TurboQuantV2Cache(bits=4, use_rotation=False),  # permanent LEAN alias
     "turboquant-v2-3bit": lambda: TurboQuantV2Cache(bits=3, use_rotation=False),
 }
@@ -353,6 +353,17 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
             if self._kv_strategy is not None
             else None
         )
+        _sdpa_rotation = (
+            getattr(self._kv_strategy, "rotation_matrix", None)
+            if self._kv_strategy is not None
+            else None
+        )
+        if _sdpa_rotation is not None:
+            from apple_basefm._kv.attention_v2 import rotated_sdpa_context as _rsc
+            _sdpa_ctx = _rsc(_sdpa_rotation)
+        else:
+            import contextlib
+            _sdpa_ctx = contextlib.nullcontext()
 
         if send_stream is not None:
             import mlx_lm
@@ -374,39 +385,41 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
                 stream_kwargs["prompt_cache"] = kv
 
             _chunks: list[str] = []
-            for _response in mlx_lm.stream_generate(
-                self._mlx_model,
-                self._mlx_tokenizer,
-                prompt=flat_prompt,
-                **stream_kwargs,
-            ):
-                _chunks.append(_response.text)
-                _chunk = _LocalStreamChunk(
-                    text=_response.text, model=self.model, predict_id=predict_id
-                )
-                _anyio_run(send_stream.send, _chunk)
+            with _sdpa_ctx:
+                for _response in mlx_lm.stream_generate(
+                    self._mlx_model,
+                    self._mlx_tokenizer,
+                    prompt=flat_prompt,
+                    **stream_kwargs,
+                ):
+                    _chunks.append(_response.text)
+                    _chunk = _LocalStreamChunk(
+                        text=_response.text, model=self.model, predict_id=predict_id
+                    )
+                    _anyio_run(send_stream.send, _chunk)
 
             text = "".join(_chunks)
         else:
             _gen_kwargs: dict[str, Any] = {}
             if kv is not None:
                 _gen_kwargs["prompt_cache"] = kv
-            with forward_span(model=self.model, backend="mlx", max_tokens=max_tokens) as span:
-                text, flat_prompt = self._generate(
-                    messages, temperature, max_tokens, logits_processors, **_gen_kwargs
-                )
-                usage = self._compute_usage(flat_prompt, text, max_tokens)
-                record_usage(span, usage)
-                logger.debug(
-                    "apple_local: generation complete",
-                    extra={
-                        "prompt_tokens": usage.prompt_tokens,
-                        "completion_tokens": usage.completion_tokens,
-                        "total_tokens": usage.total_tokens,
-                        "model": self.model,
-                        "backend": "mlx",
-                    },
-                )
+            with _sdpa_ctx:
+                with forward_span(model=self.model, backend="mlx", max_tokens=max_tokens) as span:
+                    text, flat_prompt = self._generate(
+                        messages, temperature, max_tokens, logits_processors, **_gen_kwargs
+                    )
+                    usage = self._compute_usage(flat_prompt, text, max_tokens)
+                    record_usage(span, usage)
+                    logger.debug(
+                        "apple_local: generation complete",
+                        extra={
+                            "prompt_tokens": usage.prompt_tokens,
+                            "completion_tokens": usage.completion_tokens,
+                            "total_tokens": usage.total_tokens,
+                            "model": self.model,
+                            "backend": "mlx",
+                        },
+                    )
 
         if send_stream is not None:
             usage = self._compute_usage(flat_prompt, text, max_tokens)
@@ -488,19 +501,31 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
             if self._kv_strategy is not None
             else None
         )
+        _sdpa_rotation = (
+            getattr(self._kv_strategy, "rotation_matrix", None)
+            if self._kv_strategy is not None
+            else None
+        )
+        if _sdpa_rotation is not None:
+            from apple_basefm._kv.attention_v2 import rotated_sdpa_context as _rsc
+            _sdpa_ctx = _rsc(_sdpa_rotation)
+        else:
+            import contextlib
+            _sdpa_ctx = contextlib.nullcontext()
 
         full_text_parts: list[str] = []
         _async_gen_kwargs: dict[str, Any] = {}
         if kv is not None:
             _async_gen_kwargs["prompt_cache"] = kv
-        async for token_text in self._stream_generate_async(
-            flat_prompt, temperature, max_tokens, logits_processors, **_async_gen_kwargs
-        ):
-            full_text_parts.append(token_text)
-            chunk = _LocalStreamChunk(
-                text=token_text, model=self.model, predict_id=predict_id
-            )
-            await send_stream.send(chunk)
+        with _sdpa_ctx:
+            async for token_text in self._stream_generate_async(
+                flat_prompt, temperature, max_tokens, logits_processors, **_async_gen_kwargs
+            ):
+                full_text_parts.append(token_text)
+                chunk = _LocalStreamChunk(
+                    text=token_text, model=self.model, predict_id=predict_id
+                )
+                await send_stream.send(chunk)
 
         full_text = "".join(full_text_parts)
         usage = self._compute_usage(flat_prompt, full_text, max_tokens)

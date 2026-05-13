@@ -8,13 +8,11 @@ quantization, distributing outlier channels for lower quantization error.
 Design note — rotation correctness:
     The rotation is applied inside update_and_fetch() before delegating to
     QuantizedKVCache. QuantizedKVCache dequantizes before returning, so the
-    values returned to the model's attention are in *rotated* space. This means
-    attention scores are computed as Q @ (K·R)ᵀ rather than Q @ Kᵀ, which
-    changes scores by a rotation. Full correctness (exact attention equivalence)
-    requires the paired SDPA patch in _kv/attention_v2.py (deferred). Without
-    it, the rotation still reduces quantization error but is not lossless.
-    Use use_rotation=False (LEAN mode) for the strictest numerical equivalence
-    to standard mlx-lm --kv-bits behaviour.
+    values returned to the model's attention are in *rotated* space (K·R, V·R).
+    The paired SDPA patch in _kv/attention_v2.py compensates by rotating Q
+    (Q' = Q·R) before scoring, so Q'·(K·R)ᵀ = Q·Kᵀ exactly.
+    AppleLocalLM installs this patch automatically when use_rotation=True.
+    Use use_rotation=False (LEAN mode) to skip rotation entirely.
 """
 from __future__ import annotations
 
@@ -48,10 +46,11 @@ class TurboQuantV2Cache:
         bits: Bits per quantized element. Must be in {2, 4, 8}. Default: 4.
         group_size: Number of elements per quantization group. Default: 64.
         use_rotation: Apply QR rotation before quantization. Default: False.
-            Set True only after the attention_v2.py SDPA patch ships; without
-            it, attention scores are computed in rotated K/V space which is
-            not numerically equivalent to standard mlx-lm --kv-bits output.
-            False (LEAN mode) is safe and recommended until then.
+            When True, K and V are stored in rotated space (K·R, V·R) and
+            AppleLocalLM automatically installs the attention_v2 SDPA patch
+            to rotate Q correspondingly (Q' = Q·R) for correct attention.
+            False (LEAN mode) skips rotation for strictest numerical equivalence
+            to standard mlx-lm --kv-bits output.
         use_normalization: Reserved for future attention_v2.py SDPA patch.
             Currently a no-op. Default: True.
         step: Pre-allocation step size forwarded to QuantizedKVCache. Controls
@@ -65,10 +64,6 @@ class TurboQuantV2Cache:
 
     bits: int = 4
     group_size: int = 64
-    # SAFETY: False by default until attention_v2.py SDPA patch ships.
-    # With True, K/V are stored in *rotated* space so attention scores are
-    # Q @ (K·R)ᵀ ≠ Q @ Kᵀ. This reduces quantization error but is not
-    # numerically equivalent to standard mlx-lm. See module docstring.
     use_rotation: bool = False
     use_normalization: bool = True  # reserved — wired in attention_v2.py (future)
     step: int = 256
@@ -88,21 +83,11 @@ class TurboQuantV2Cache:
             raise ValueError(
                 f"TurboQuantV2Cache: step must be >= 1, got {self.step!r}."
             )
-        if self.use_rotation:
-            logger.warning(
-                "TurboQuantV2Cache: use_rotation=True — K/V are stored in rotated "
-                "space (Q @ (K·R)ᵀ ≠ Q @ Kᵀ). The compensating SDPA patch "
-                "(attention_v2.py) is not yet implemented. Attention scores will "
-                "differ from standard mlx-lm --kv-bits output. Use "
-                "use_rotation=False (LEAN mode) for strict numerical equivalence.",
-                extra={"backend": "mlx"},
-            )
         if self.use_normalization:
             warnings.warn(
                 "TurboQuantV2Cache(use_normalization=True) is a no-op. "
-                "The normalization path will be wired in attention_v2.py; "
-                "until then, this parameter has no effect. "
-                "Planned removal in v0.4 once attention_v2.py ships. "
+                "The normalization path is deferred beyond v1.0; "
+                "rotation (use_rotation=True) is the shipped path for outlier reduction. "
                 "Pass use_normalization=False to suppress this warning.",
                 DeprecationWarning,
                 stacklevel=2,
@@ -178,6 +163,11 @@ class TurboQuantV2Cache:
             f"TurboQuantV2Cache(bits={self.bits}, mode={mode}, "
             f"group_size={self.group_size})"
         )
+
+    @property
+    def rotation_matrix(self):
+        """Rotation matrix after build(), or None if use_rotation=False or build() not yet called."""
+        return getattr(self, "_rotation", None)
 
 
 class _TurboQuantV2LayerCache:

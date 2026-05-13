@@ -34,6 +34,7 @@ except ImportError:
         def __init__(self, model: str, **kwargs: Any) -> None:
             self.model = model
             self.history: list[dict] = []
+            self.cache: bool = kwargs.get("cache", True)
 
         def __call__(self, messages: list[dict], **kwargs: Any) -> list[str]:
             return self.forward(messages=messages, **kwargs)

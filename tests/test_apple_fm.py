@@ -219,6 +219,7 @@ class TestStructuredOutput:
         self, fm_instance: Any, fake_apple_fm_sdk: types.ModuleType
     ) -> None:
         """response_format=PydanticModel should trigger generable path."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         from pydantic import BaseModel
 
         class Answer(BaseModel):
@@ -252,6 +253,7 @@ class TestStructuredOutput:
     @pytest.mark.asyncio
     async def test_mixed_type_literal_falls_back_to_any(self, apple_fm_mod: types.ModuleType) -> None:
         """Literal[1, "two"] must not raise — it falls back to Any."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         from typing import Literal
 
         from pydantic import BaseModel
@@ -273,6 +275,7 @@ class TestStructuredOutput:
         self, fm_instance: Any, fake_apple_fm_sdk: types.ModuleType
     ) -> None:
         """If generable path fails, fallback session must produce a response."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         from pydantic import BaseModel
 
         class Answer(BaseModel):
@@ -322,6 +325,7 @@ class TestGuardrail:
         self, fm_instance: Any, fake_apple_fm_sdk: types.ModuleType
     ) -> None:
         """Guardrail on the fallback (no-schema) path must also raise RuntimeError."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         from pydantic import BaseModel
 
         class Answer(BaseModel):
@@ -469,6 +473,7 @@ class TestDspyToolToAppleTool:
 class TestPydanticToGenerable:
     def test_literal_same_type(self, apple_fm_mod: types.ModuleType) -> None:
         """Literal[a, b] with same type must build a @generable class."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         from typing import Literal
 
         import apple_fm_sdk as fm
@@ -482,6 +487,7 @@ class TestPydanticToGenerable:
 
     def test_ge_le_range_constraint(self, apple_fm_mod: types.ModuleType) -> None:
         """int field with ge/le must invoke fm.guide with range."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         import apple_fm_sdk as fm
         from pydantic import BaseModel, Field
 
@@ -508,6 +514,7 @@ class TestPydanticToGenerable:
         self, apple_fm_mod: types.ModuleType
     ) -> None:
         """If make_dataclass raises, _pydantic_to_generable must return None."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         import apple_fm_sdk as fm
         from pydantic import BaseModel
 
@@ -569,6 +576,7 @@ class TestAforwardGenerable:
         self, fm_instance: Any, fake_apple_fm_sdk: types.ModuleType
     ) -> None:
         """With timeout=None, asyncio.wait_for must NOT be called on the generable path."""
+        pytest.importorskip("pydantic", reason="pydantic required for this test")
         from pydantic import BaseModel
 
         class Answer(BaseModel):

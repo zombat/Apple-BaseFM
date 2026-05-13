@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "apple-basefm"
-version = "0.3.0"
+version = "1.0.0"
 description = "Apple Silicon and Apple Intelligence backends for DSPy"
 readme = "README.md"
 license = { text = "MIT" }
@@ -12,7 +12,7 @@ requires-python = ">=3.10"
 authors = [{ name = "zombat" }]
 keywords = ["dspy", "apple", "mlx", "apple-intelligence", "on-device", "llm", "apple-basefm"]
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3.10",
