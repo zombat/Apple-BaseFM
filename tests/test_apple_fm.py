@@ -85,7 +85,7 @@ class TestConstruction:
                 mod.AppleFoundationLM()
 
     def test_unavailable_model_raises(
-        self,
+        self,``
         apple_fm_mod: types.ModuleType,
         fake_apple_fm_sdk: types.ModuleType,
     ) -> None:

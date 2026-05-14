@@ -55,25 +55,30 @@ _SUPPORTED_BACKENDS = ("mlx", "coreml")
 # String preset aliases so users don't have to import the cache class directly.
 # Each value is a zero-arg factory so every call returns a fresh instance.
 #
-# "turboquant-v2"      — tracks "best available" over time. Currently LEAN
-#                        (use_rotation=False). When attention_v2.py ships,
-#                        this preset will be updated to use_rotation=True to
-#                        enable full rotation benefit. Users who want stable,
-#                        reproducible LEAN behaviour should pin
-#                        "turboquant-v2-lean" instead.
+# "turboquant-v2"          — RECOMMENDED. 4-bit packed KV cache, no rotation.
+#                            ~4× smaller than fp16 with output numerically
+#                            equivalent to standard mlx-lm --kv-bits.  Safe
+#                            for production.  Alias of "turboquant-v2-lean".
 #
-# "turboquant-v2-lean" — permanent stable alias: always use_rotation=False.
-#                        Safe for production and strict numerical equivalence
-#                        to standard mlx-lm --kv-bits output.
+# "turboquant-v2-lean"     — permanent stable alias: always use_rotation=False.
+#                            Pin this name if you want to guarantee LEAN
+#                            behaviour regardless of future preset changes.
 #
-# NOTE: both presets use use_rotation=False (LEAN mode) until the compensating
-# SDPA patch (attention_v2.py) ships. Rotation reduces quantization error but
-# causes attention scores to be computed in rotated K/V space, which is not
-# numerically equivalent to standard mlx-lm --kv-bits output.
+# "turboquant-v2-3bit"     — 3-bit packed KV cache, no rotation.  More
+#                            aggressive memory savings, larger quality hit.
+#
+# "turboquant-v2-rotated"  — EXPERIMENTAL.  use_rotation=True with the
+#                            compensating SDPA patch in
+#                            apple_basefm/_kv/attention_v2.py.  The Q@R
+#                            compensation currently produces garbage output
+#                            on real models — do not use in production.
+#                            Tracked for future repair; the lean preset is
+#                            the supported path.
 _KV_PRESETS: dict[str, Any] = {
-    "turboquant-v2":      lambda: TurboQuantV2Cache(bits=4, use_rotation=True),   # rotation enabled (attention_v2 ships in v1.0.0)
-    "turboquant-v2-lean": lambda: TurboQuantV2Cache(bits=4, use_rotation=False),  # permanent LEAN alias
-    "turboquant-v2-3bit": lambda: TurboQuantV2Cache(bits=3, use_rotation=False),
+    "turboquant-v2":         lambda: TurboQuantV2Cache(bits=4, use_rotation=False),  # alias of -lean
+    "turboquant-v2-lean":    lambda: TurboQuantV2Cache(bits=4, use_rotation=False),  # permanent LEAN alias
+    "turboquant-v2-3bit":    lambda: TurboQuantV2Cache(bits=3, use_rotation=False),
+    "turboquant-v2-rotated": lambda: TurboQuantV2Cache(bits=4, use_rotation=True),   # EXPERIMENTAL: broken
 }
 
 
@@ -215,6 +220,11 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
             )
 
         self._kv_strategy: KVCacheStrategy | None = kv_cache
+
+        # KV cache bytes from the most recent ``forward()`` pass.  ``None``
+        # until the first call, or when no ``kv_cache`` strategy is configured
+        # (mlx-lm's default cache does not expose ``nbytes``).
+        self.last_kv_bytes: int | None = None
 
         # Read head_dim and n_layers once at init — only needed when a kv_cache
         # strategy is set. Guarded so non-standard architectures are not broken
@@ -384,21 +394,58 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
             if kv is not None:
                 stream_kwargs["prompt_cache"] = kv
 
+            # Queue-based bridge: the dedicated MLX executor thread produces tokens;
+            # this (anyio worker) thread consumes them and forwards to send_stream.
+            # Using a stdlib queue (not asyncio.Queue) because both sides are
+            # synchronous — the MLX thread puts, this thread blocks on get().
+            import queue as _queue
+            import threading as _threading
+
+            token_queue: _queue.Queue[str | BaseException | None] = _queue.Queue()
+            cancel_event = _threading.Event()
+            model = self._mlx_model
+            tokenizer = self._mlx_tokenizer
+
+            def _run_on_mlx_thread() -> None:
+                try:
+                    with _sdpa_ctx:
+                        for _response in mlx_lm.stream_generate(
+                            model,
+                            tokenizer,
+                            prompt=flat_prompt,
+                            **stream_kwargs,
+                        ):
+                            if cancel_event.is_set():
+                                break
+                            token_queue.put(_response.text)
+                except BaseException as exc:  # noqa: BLE001
+                    token_queue.put(exc)
+                finally:
+                    token_queue.put(None)  # sentinel: end of stream
+
+            self._mlx_executor.submit(_run_on_mlx_thread)
+
             _chunks: list[str] = []
-            with _sdpa_ctx:
-                for _response in mlx_lm.stream_generate(
-                    self._mlx_model,
-                    self._mlx_tokenizer,
-                    prompt=flat_prompt,
-                    **stream_kwargs,
-                ):
-                    _chunks.append(_response.text)
+            try:
+                while True:
+                    item = token_queue.get()
+                    if item is None:
+                        break
+                    if isinstance(item, BaseException):
+                        raise item
+                    _chunks.append(item)
                     _chunk = _LocalStreamChunk(
-                        text=_response.text, model=self.model, predict_id=predict_id
+                        text=item, model=self.model, predict_id=predict_id
                     )
                     _anyio_run(send_stream.send, _chunk)
+            except BaseException:
+                cancel_event.set()
+                raise
 
             text = "".join(_chunks)
+            self.last_kv_bytes = (
+                sum(getattr(c, "nbytes", 0) for c in kv) if kv is not None else None
+            )
         else:
             _gen_kwargs: dict[str, Any] = {}
             if kv is not None:
@@ -410,6 +457,13 @@ class AppleLocalLM(_AppleBaseLM, _MLXMixin):
                     )
                     usage = self._compute_usage(flat_prompt, text, max_tokens)
                     record_usage(span, usage)
+                    # Record KV cache bytes from the just-completed pass so
+                    # callers can compare memory between configurations via
+                    # ``lm.last_kv_bytes``.  Sums each layer's ``nbytes``;
+                    # ``None`` when no kv_cache strategy is configured.
+                    self.last_kv_bytes = (
+                        sum(getattr(c, "nbytes", 0) for c in kv) if kv is not None else None
+                    )
                     logger.debug(
                         "apple_local: generation complete",
                         extra={

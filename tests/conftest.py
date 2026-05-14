@@ -99,6 +99,13 @@ def _make_fake_mlx_lm() -> types.ModuleType:
     class FakeModel:
         layers = [_FakeLayer()]
 
+        def __call__(self, x: Any, **kwargs: Any) -> MagicMock:
+            """Return a fake logits tensor supporting indexing and mx.argmax."""
+            logits = MagicMock()
+            # logits[0, -1, :] → another MagicMock (consumed by mx.argmax)
+            logits.__getitem__ = MagicMock(return_value=MagicMock())
+            return logits
+
     class FakeTokenizer:
         model_max_length = 4096
 
@@ -187,6 +194,47 @@ def _make_fake_mlx_lm() -> types.ModuleType:
 
 
 # ---------------------------------------------------------------------------
+# Fake mlx / mlx.core builder
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_mlx_core() -> tuple[types.ModuleType, types.ModuleType]:
+    """Build synthetic mlx and mlx.core modules for unit tests.
+
+    Provides the minimal surface used by the raw-forward-pass pattern:
+    ``mx.array()``, ``mx.eval()``, and ``mx.argmax()``.
+    """
+    mlx_mod = types.ModuleType("mlx")
+    core = types.ModuleType("mlx.core")
+
+    class FakeMXArray:
+        def __init__(self, data: Any = None) -> None:
+            self._data = data
+
+        def __getitem__(self, idx: Any) -> "FakeMXArray":
+            return FakeMXArray()
+
+        def item(self) -> int:
+            return 42  # deterministic fake token id
+
+    def array(data: Any) -> FakeMXArray:  # noqa: ANN001
+        return FakeMXArray(data)
+
+    def eval(*args: Any) -> None:  # noqa: ANN002
+        pass
+
+    def argmax(arr: Any, **kwargs: Any) -> FakeMXArray:
+        return FakeMXArray(42)
+
+    core.array = array  # type: ignore[attr-defined]
+    core.eval = eval  # type: ignore[attr-defined]
+    core.argmax = argmax  # type: ignore[attr-defined]
+    mlx_mod.core = core  # type: ignore[attr-defined]
+
+    return mlx_mod, core
+
+
+# ---------------------------------------------------------------------------
 # Autouse fixtures
 # ---------------------------------------------------------------------------
 
@@ -212,3 +260,37 @@ def fake_mlx_modules(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
     monkeypatch.setitem(sys.modules, "mlx_lm.models", mlx.models)
     monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", mlx.models.cache)
     return mlx
+
+
+@pytest.fixture(autouse=True)
+def fake_mlx_core(monkeypatch: pytest.MonkeyPatch) -> types.ModuleType:
+    """Inject synthetic mlx and mlx.core into sys.modules for every test."""
+    import sys
+
+    mlx_mod, core = _make_fake_mlx_core()
+    monkeypatch.setitem(sys.modules, "mlx", mlx_mod)
+    monkeypatch.setitem(sys.modules, "mlx.core", core)
+    return core
+
+
+# ---------------------------------------------------------------------------
+# MCP fixtures
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture
+async def mcp_client():
+    """Async fixture that yields a connected FastMCP client backed by MCP_SERVER.
+
+    The connection is fully in-process — no subprocess or network socket is
+    opened. Use it to call tools directly::
+
+        result = await mcp_client.call_tool("add", {"a": 1, "b": 2})
+        assert result.data == 3
+    """
+    from fastmcp.client import Client
+
+    from tests.tools import MCP_SERVER
+
+    async with Client(MCP_SERVER) as client:
+        yield client

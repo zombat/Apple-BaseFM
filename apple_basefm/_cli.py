@@ -384,6 +384,41 @@ def _cmd_remove(args: object) -> None:
 
 
 # ---------------------------------------------------------------------------
+# save-examples
+# ---------------------------------------------------------------------------
+
+_EXAMPLES_DEFAULT = "apple-basefm.examples.py"
+
+
+def _cmd_save_examples(args: object) -> None:
+    import shutil
+    from pathlib import Path
+
+    dest = Path(getattr(args, "path", None) or _EXAMPLES_DEFAULT)
+    src = Path(__file__).parent.parent / "examples" / "apple_on_device_lm.py"
+
+    if not src.exists():
+        print(
+            f"error: examples file not found at {src}\n"
+            "  If you installed via pip, re-clone the repository to access examples.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    if dest.exists():
+        print(
+            f"error: {dest} already exists. Choose a different path or remove the file first.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dest)
+    print(f"Saved: {dest.resolve()}")
+    print(f"Run:   python {dest} --help")
+
+
+# ---------------------------------------------------------------------------
 # download helpers
 # ---------------------------------------------------------------------------
 
@@ -653,6 +688,25 @@ def main(argv: list[str] | None = None) -> None:
     p_remove.add_argument("--yes", "-y", action="store_true", default=False,
                           help="Skip the confirmation prompt.")
 
+    # ── save-examples ────────────────────────────────────────────────────────
+    p_save = sub.add_parser(
+        "save-examples",
+        help="Copy the bundled examples script to a local file.",
+        description=(
+            "Copies examples/apple_on_device_lm.py to a local path so you can\n"
+            "run, read, and modify the usage examples.\n\n"
+            f"Default output: {_EXAMPLES_DEFAULT!r}"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_save.add_argument(
+        "path",
+        nargs="?",
+        metavar="PATH",
+        default=None,
+        help=f"Destination file path (default: {_EXAMPLES_DEFAULT!r}).",
+    )
+
     # ── download ─────────────────────────────────────────────────────────────
     p_download = sub.add_parser(
         "download",
@@ -700,3 +754,5 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_remove(args)
     elif args.command == "download":
         _cmd_download(args)
+    elif args.command == "save-examples":
+        _cmd_save_examples(args)

@@ -221,13 +221,14 @@ grows. TurboQuant keeps the curve flat.
 ```python
 from apple_basefm import AppleLocalLM
 
-# Preset strings (recommended)
+# Preset string (recommended) — 4-bit LEAN KV cache, ~4× smaller than fp16.
 lm = AppleLocalLM(
     "mlx-community/Meta-Llama-3.1-70B-Instruct-4bit",
-    kv_cache="turboquant-v2",      # 4-bit with QR rotation (default since v1.0.0)
+    kv_cache="turboquant-v2",      # alias of "turboquant-v2-lean"
 )
 
-# LEAN mode — no rotation, numerically identical to mlx-lm --kv-bits 4
+# Explicit LEAN alias (pin this name if you want to guarantee no rotation
+# even if "turboquant-v2" is ever re-pointed in a future release).
 lm = AppleLocalLM(
     "mlx-community/Meta-Llama-3.1-70B-Instruct-4bit",
     kv_cache="turboquant-v2-lean",
@@ -238,14 +239,16 @@ from apple_basefm._kv import TurboQuantV2Cache
 
 lm = AppleLocalLM(
     "mlx-community/Meta-Llama-3.1-70B-Instruct-4bit",
-    kv_cache=TurboQuantV2Cache(bits=4, group_size=64, use_rotation=True),
+    kv_cache=TurboQuantV2Cache(bits=4, group_size=64, use_rotation=False),
 )
 ```
 
 | Preset | Bits | Rotation | Notes |
 |---|---|---|---|
-| `"turboquant-v2"` | 4 | Yes | Recommended default; QR rotation reduces quantization error (~5–8% lower perplexity vs. LEAN at 4-bit) |
-| `"turboquant-v2-lean"` | 4 | No | Permanent stable alias; always `use_rotation=False`, numerically identical to `mlx-lm --kv-bits 4` |
+| `"turboquant-v2"` | 4 | No | **Recommended.** Alias of `"turboquant-v2-lean"` — production-stable 4-bit KV. |
+| `"turboquant-v2-lean"` | 4 | No | Permanent stable alias; `use_rotation=False`, numerically identical to `mlx-lm --kv-bits 4`. |
+| `"turboquant-v2-3bit"` | 3 | No | More aggressive memory savings; larger quality hit. |
+| `"turboquant-v2-rotated"` | 4 | Yes | **Experimental — do not use.** The compensating SDPA patch currently produces garbage output on real models. Tracked for future repair. |
 
 `TurboQuantV2Cache` valid values: `bits` ∈ `{2, 4, 8}`, `group_size` ≥ 1, `step` ≥ 1.
 

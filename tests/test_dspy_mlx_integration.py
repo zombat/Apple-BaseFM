@@ -472,3 +472,371 @@ class TestTokenSessionWithMLX:
         assert session.completion_tokens >= 0
         assert session.total_tokens == session.prompt_tokens + session.completion_tokens
         assert session.call_count == 1
+
+
+# ---------------------------------------------------------------------------
+# Pattern 3: Per-predictor lm= override
+# ---------------------------------------------------------------------------
+
+
+class TestPerPredictorLMOverride:
+    """Per-predictor lm= kwarg routes each predictor to a different LM."""
+
+    def test_per_predictor_lm_bypasses_global(
+        self, lm: Any, apple_local_mod: types.ModuleType
+    ) -> None:
+        """A Predict with .lm set uses that LM even when a different global is configured."""
+        with (
+            patch("platform.system", return_value="Darwin"),
+            patch("platform.machine", return_value="arm64"),
+        ):
+            lm2 = apple_local_mod.AppleLocalLM("mlx-community/other-model", cache=False)
+
+        p = dspy.Predict("question -> answer")
+        p.lm = lm2  # per-predictor override — .lm attribute, not constructor kwarg
+        with _seq_generate(lm2, [_dspy_fmt({"answer": "Paris"})]):
+            with dspy.context(lm=lm):  # global = lm, but p.lm overrides to lm2
+                result = p(question="Capital of France?")
+        assert result.answer.strip() == "Paris"
+
+    def test_two_stage_module_uses_different_lms(
+        self, lm: Any, apple_local_mod: types.ModuleType
+    ) -> None:
+        """A two-stage Module routes each stage to its own explicitly-set LM."""
+        with (
+            patch("platform.system", return_value="Darwin"),
+            patch("platform.machine", return_value="arm64"),
+        ):
+            lm2 = apple_local_mod.AppleLocalLM("mlx-community/cloud-stand-in", cache=False)
+
+        class TwoLMModule(dspy.Module):
+            def __init__(self, local: Any, cloud: Any) -> None:
+                self.extract = dspy.Predict("raw_text -> entities")
+                self.extract.lm = local  # per-predictor override via .lm
+                self.reason = dspy.Predict("entities -> verdict")
+                self.reason.lm = cloud
+
+            def forward(self, raw_text: str) -> dspy.Prediction:
+                extracted = self.extract(raw_text=raw_text)
+                return self.reason(entities=extracted.entities)
+
+        extract_resp = _dspy_fmt({"entities": "Apple, M4"})
+        reason_resp = _dspy_fmt({"verdict": "positive"})
+
+        with _seq_generate(lm, [extract_resp]):
+            with _seq_generate(lm2, [reason_resp]):
+                result = TwoLMModule(local=lm, cloud=lm2).forward(
+                    raw_text="Apple launched M4."
+                )
+        assert result.verdict.strip() == "positive"
+
+    def test_fallback_to_context_lm_when_no_override(self, lm: Any) -> None:
+        """A Predict without explicit lm= falls back to the dspy.context LM."""
+        with _seq_generate(lm, [_dspy_fmt({"answer": "Tokyo"})]):
+            with dspy.context(lm=lm):
+                result = dspy.Predict("question -> answer")(question="Capital of Japan?")
+        assert result.answer.strip() == "Tokyo"
+
+
+# ---------------------------------------------------------------------------
+# AppleFoundationLM helpers
+# ---------------------------------------------------------------------------
+
+
+def _reload_apple_fm() -> types.ModuleType:
+    for key in list(sys.modules):
+        if "apple_basefm.apple_fm" in key:
+            del sys.modules[key]
+    return importlib.import_module("apple_basefm.apple_fm")
+
+
+@pytest.fixture()
+def foundation_lm() -> Any:
+    """AppleFoundationLM backed by fake apple_fm_sdk; caching disabled."""
+    with patch("platform.system", return_value="Darwin"):
+        mod = _reload_apple_fm()
+        return mod.AppleFoundationLM(cache=False)
+
+
+def _foundation_seq(instance: Any, responses: list[str]):
+    """Patch forward() on an AppleFoundationLM to return fake _FMResponse objects."""
+    from apple_basefm._response import _FMChoice, _FMMessage, _FMResponse, _FMUsage
+
+    itr = iter(responses)
+
+    def _fake(**kwargs: Any) -> _FMResponse:
+        text = next(itr, _dspy_fmt({"answer": "fallback"}))
+        return _FMResponse(
+            choices=[_FMChoice(message=_FMMessage(content=text))],
+            usage=_FMUsage(prompt_tokens=10, completion_tokens=5, total_tokens=15),
+            model="apple/on-device",
+            _hidden_params={"response_cost": 0.0},
+        )
+
+    return patch.object(instance, "forward", side_effect=_fake)
+
+
+# ---------------------------------------------------------------------------
+# Patterns 4 + 10: AppleFoundationLM + dspy.Predict / dspy.ReAct
+# ---------------------------------------------------------------------------
+
+
+class TestAppleFoundationLMWithDSPy:
+    """DSPy modules driven by AppleFoundationLM (fake apple_fm_sdk)."""
+
+    def test_predict_returns_expected_answer(self, foundation_lm: Any) -> None:
+        """dspy.Predict driven by AppleFoundationLM extracts the answer field."""
+        with _foundation_seq(foundation_lm, [_dspy_fmt({"answer": "Paris"})]):
+            with dspy.context(lm=foundation_lm):
+                result = dspy.Predict("question -> answer")(question="Capital of France?")
+        assert result.answer.strip() == "Paris"
+
+    def test_chain_of_thought_returns_reasoning_and_answer(self, foundation_lm: Any) -> None:
+        """dspy.ChainOfThought driven by AppleFoundationLM populates reasoning + answer."""
+        resp = _dspy_fmt({"reasoning": "France's capital is Paris.", "answer": "Paris"})
+        with _foundation_seq(foundation_lm, [resp]):
+            with dspy.context(lm=foundation_lm):
+                result = dspy.ChainOfThought("question -> answer")(
+                    question="Capital of France?"
+                )
+        assert result.answer.strip() == "Paris"
+        assert result.reasoning.strip() != ""
+
+    def test_react_finish_on_first_step(self, foundation_lm: Any) -> None:
+        """dspy.ReAct driven by AppleFoundationLM returns answer on an immediate finish."""
+        react_resp = _dspy_fmt(
+            {"next_thought": "I know.", "next_tool_name": "finish", "next_tool_args": {}}
+        )
+        extract_resp = _dspy_fmt({"reasoning": "It's Paris.", "answer": "Paris"})
+        with _foundation_seq(foundation_lm, [react_resp, extract_resp]):
+            with dspy.context(lm=foundation_lm):
+                result = dspy.ReAct("question -> answer", tools=[lookup_capital])(
+                    question="Capital of France?"
+                )
+        assert result.answer.strip() == "Paris"
+
+    def test_react_calls_tool_and_records_observation(self, foundation_lm: Any) -> None:
+        """dspy.ReAct driven by AppleFoundationLM executes a tool and records the result."""
+        tool_resp = _dspy_fmt(
+            {
+                "next_thought": "I need to add.",
+                "next_tool_name": "add",
+                "next_tool_args": {"a": 10, "b": 20},
+            }
+        )
+        finish_resp = _dspy_fmt(
+            {"next_thought": "Done.", "next_tool_name": "finish", "next_tool_args": {}}
+        )
+        extract_resp = _dspy_fmt({"reasoning": "10+20=30.", "answer": "30"})
+        with _foundation_seq(foundation_lm, [tool_resp, finish_resp, extract_resp]):
+            with dspy.context(lm=foundation_lm):
+                result = dspy.ReAct("question -> answer", tools=[add])(
+                    question="What is 10 + 20?"
+                )
+        assert result.answer.strip() == "30"
+        assert result.trajectory["observation_0"] == 30
+
+    def test_supports_function_calling(self, foundation_lm: Any) -> None:
+        """AppleFoundationLM.supports_function_calling is True."""
+        assert foundation_lm.supports_function_calling is True
+
+    def test_supports_response_schema(self, foundation_lm: Any) -> None:
+        """AppleFoundationLM.supports_response_schema is True."""
+        assert foundation_lm.supports_response_schema is True
+
+    def test_model_identifier(self, foundation_lm: Any) -> None:
+        """AppleFoundationLM.model is 'apple/on-device'."""
+        assert foundation_lm.model == "apple/on-device"
+
+
+# ---------------------------------------------------------------------------
+# Pattern 11: dspy.streamify
+# ---------------------------------------------------------------------------
+
+
+class TestStreamifyWithMLX:
+    """dspy.streamify integration with AppleLocalLM."""
+
+    def test_streamify_wraps_module_into_callable(self, lm: Any) -> None:
+        """dspy.streamify(module) returns a callable object."""
+        qa = dspy.Predict("question -> answer")
+        streaming_qa = dspy.streamify(qa)
+        assert callable(streaming_qa)
+
+    async def test_streamify_final_prediction_has_answer(self, lm: Any) -> None:
+        """The final item yielded by a streamify call carries the parsed Prediction."""
+        import mlx_lm
+
+        from apple_basefm._mlx import _LocalStreamChunk
+
+        full_resp = _dspy_fmt({"answer": "Earth, Mars, Jupiter"})
+        # Split into small token-sized chunks
+        chunk_size = max(1, len(full_resp) // 5)
+        token_texts = [full_resp[i : i + chunk_size] for i in range(0, len(full_resp), chunk_size)]
+
+        class _FR:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+        def fake_stream_gen(
+            model: Any, tokenizer: Any, prompt: str = "", **kwargs: Any
+        ):
+            for t in token_texts:
+                yield _FR(t)
+
+        sent_chunks: list[Any] = []
+
+        with (
+            patch.object(mlx_lm, "stream_generate", side_effect=fake_stream_gen),
+            patch("anyio.from_thread.run", side_effect=lambda fn, arg: sent_chunks.append(arg)),
+        ):
+            qa = dspy.Predict("question -> answer")
+            streaming_qa = dspy.streamify(qa)
+            items: list[Any] = []
+            with dspy.context(lm=lm):
+                async for item in streaming_qa(question="Name three planets."):
+                    items.append(item)
+
+        # stream_generate was called → chunks were dispatched via our patched runner
+        assert any(isinstance(c, _LocalStreamChunk) for c in sent_chunks)
+        # Final yielded item is the Prediction
+        assert len(items) >= 1
+        final = items[-1]
+        assert hasattr(final, "answer")
+
+    async def test_streamify_lm_kwarg_scopes_call(self, lm: Any) -> None:
+        """Passing lm= directly to a streamify call routes the call through that LM."""
+        import mlx_lm
+
+        full_resp = _dspy_fmt({"answer": "42"})
+        token_texts = [full_resp[i : i + 8] for i in range(0, len(full_resp), 8)]
+
+        class _FR:
+            def __init__(self, text: str) -> None:
+                self.text = text
+
+        def fake_stream_gen(
+            model: Any, tokenizer: Any, prompt: str = "", **kwargs: Any
+        ):
+            for t in token_texts:
+                yield _FR(t)
+
+        with (
+            patch.object(mlx_lm, "stream_generate", side_effect=fake_stream_gen),
+            patch("anyio.from_thread.run", side_effect=lambda fn, arg: None),
+        ):
+            qa = dspy.Predict("question -> answer")
+            streaming_qa = dspy.streamify(qa)
+            items: list[Any] = []
+            async for item in streaming_qa(question="What is 6×7?", lm=lm):
+                items.append(item)
+
+        assert len(items) >= 1
+        final = items[-1]
+        assert hasattr(final, "answer")
+
+
+# ---------------------------------------------------------------------------
+# Pattern 12: dspy.Tool.from_mcp_tool (MCP tools + dspy.ReAct)
+# ---------------------------------------------------------------------------
+
+
+class TestMCPToolsWithReAct:
+    """dspy.ReAct using dspy.Tool.from_mcp_tool with a live FastMCP server."""
+
+    async def test_add_tool_via_mcp(self, lm: Any, mcp_client: Any) -> None:
+        """ReAct calls the MCP add tool and records the correct observation."""
+        mcp_tools_raw = await mcp_client.list_tools()
+        tool_map = {
+            t.name: dspy.Tool.from_mcp_tool(mcp_client.session, t)
+            for t in mcp_tools_raw
+        }
+
+        tool_resp = _dspy_fmt(
+            {
+                "next_thought": "I need to add 5 and 3.",
+                "next_tool_name": "add",
+                "next_tool_args": {"a": 5, "b": 3},
+            }
+        )
+        finish_resp = _dspy_fmt(
+            {"next_thought": "Done.", "next_tool_name": "finish", "next_tool_args": {}}
+        )
+        extract_resp = _dspy_fmt({"reasoning": "5+3=8.", "answer": "8"})
+
+        with _seq_generate(lm, [tool_resp, finish_resp, extract_resp]):
+            with dspy.context(lm=lm):
+                react = dspy.ReAct("question -> answer", tools=[tool_map["add"]])
+                result = await react.acall(question="What is 5 + 3?")
+
+        assert result.answer.strip() == "8"
+        # MCP tool was actually invoked — observation is the real return value (as str)
+        assert result.trajectory.get("observation_0") == "8"
+
+    async def test_lookup_capital_tool_via_mcp(self, lm: Any, mcp_client: Any) -> None:
+        """ReAct calls the MCP lookup_capital tool and returns the correct capital."""
+        mcp_tools_raw = await mcp_client.list_tools()
+        tool_map = {
+            t.name: dspy.Tool.from_mcp_tool(mcp_client.session, t)
+            for t in mcp_tools_raw
+        }
+
+        tool_resp = _dspy_fmt(
+            {
+                "next_thought": "Look up France's capital.",
+                "next_tool_name": "lookup_capital",
+                "next_tool_args": {"country": "france"},
+            }
+        )
+        finish_resp = _dspy_fmt(
+            {"next_thought": "Found it.", "next_tool_name": "finish", "next_tool_args": {}}
+        )
+        extract_resp = _dspy_fmt({"reasoning": "It's Paris.", "answer": "Paris"})
+
+        with _seq_generate(lm, [tool_resp, finish_resp, extract_resp]):
+            with dspy.context(lm=lm):
+                react = dspy.ReAct(
+                    "question -> answer", tools=[tool_map["lookup_capital"]]
+                )
+                result = await react.acall(question="What is the capital of France?")
+
+        assert result.answer.strip() == "Paris"
+        assert result.trajectory.get("observation_0") == "Paris"
+
+    async def test_word_count_tool_via_mcp(self, lm: Any, mcp_client: Any) -> None:
+        """ReAct calls the MCP word_count tool and returns the correct count."""
+        mcp_tools_raw = await mcp_client.list_tools()
+        tool_map = {
+            t.name: dspy.Tool.from_mcp_tool(mcp_client.session, t)
+            for t in mcp_tools_raw
+        }
+
+        tool_resp = _dspy_fmt(
+            {
+                "next_thought": "Count the words.",
+                "next_tool_name": "word_count",
+                "next_tool_args": {"text": "hello world foo"},
+            }
+        )
+        finish_resp = _dspy_fmt(
+            {"next_thought": "3 words.", "next_tool_name": "finish", "next_tool_args": {}}
+        )
+        extract_resp = _dspy_fmt({"reasoning": "3 words.", "answer": "3"})
+
+        with _seq_generate(lm, [tool_resp, finish_resp, extract_resp]):
+            with dspy.context(lm=lm):
+                react = dspy.ReAct(
+                    "question -> answer", tools=[tool_map["word_count"]]
+                )
+                result = await react.acall(question="How many words in 'hello world foo'?")
+
+        assert result.answer.strip() == "3"
+        assert result.trajectory.get("observation_0") == "3"
+
+    async def test_all_mcp_tools_are_convertible(self, mcp_client: Any) -> None:
+        """All tools in MCP_SERVER can be converted to dspy.Tool without error."""
+        mcp_tools_raw = await mcp_client.list_tools()
+        assert len(mcp_tools_raw) > 0
+        for t in mcp_tools_raw:
+            tool = dspy.Tool.from_mcp_tool(mcp_client.session, t)
+            assert tool.name == t.name
