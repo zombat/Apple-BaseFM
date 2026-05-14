@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "apple-basefm"
-version = "1.0.0"
+version = "1.0.5"
 description = "Apple Silicon and Apple Intelligence backends for DSPy"
 readme = "README.md"
 license = { text = "MIT" }
@@ -52,6 +52,7 @@ dev = [
     "mypy>=1.10",
     "dspy>=2.5.0",
     "pdoc>=14.0",
+    "fastmcp>=2.0",
 ]
 
 # Optional OpenTelemetry integration

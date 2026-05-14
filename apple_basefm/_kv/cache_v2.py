@@ -290,6 +290,17 @@ class _TurboQuantV2LayerCache:
         return self._inner.state
 
     @property
+    def bits(self) -> int:
+        """Bits per element — exposed so mlx-lm's SDPA dispatch routes to
+        quantized_scaled_dot_product_attention when cache=self is passed."""
+        return self._bits
+
+    @property
+    def group_size(self) -> int:
+        """Group size — required alongside bits by mlx-lm's quantized SDPA."""
+        return self._group_size
+
+    @property
     def offset(self) -> int:
         """Number of tokens currently stored in this layer's cache."""
         if self._inner is None:

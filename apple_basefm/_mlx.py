@@ -7,9 +7,11 @@ apple_basefm.apple_local for all public usage.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import dataclasses
 import json
 import logging
+import queue
 import threading
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -131,8 +133,43 @@ class _MLXMixin:
     _schema_processor_cache: dict[str, Any]
     context_window: int
 
+    # Attributes that must be shared (not copied) across deepcopy calls.
+    # The executor owns the GPU stream that the model weights were loaded on;
+    # the model and tokenizer objects are also bound to that thread/stream.
+    _SHARED_ON_DEEPCOPY: frozenset[str] = frozenset(
+        {"_mlx_executor", "_mlx_model", "_mlx_tokenizer", "_schema_processor_cache"}
+    )
+
+    def __deepcopy__(self, memo: dict) -> "_MLXMixin":
+        """Custom deepcopy that shares the MLX executor and model weights.
+
+        ``copy.deepcopy`` is called by ``dspy.LM.copy()`` (e.g. in BestOfN)
+        to create a variant with different sampling settings.  The executor
+        and loaded MLX objects cannot be pickled / reconstructed, and sharing
+        them is correct — all copies should run on the same inference thread
+        and use the same weights.
+        """
+        import copy
+
+        cls = self.__class__
+        result = cls.__new__(cls)
+        memo[id(self)] = result
+        for k, v in self.__dict__.items():
+            if k in self._SHARED_ON_DEEPCOPY:
+                object.__setattr__(result, k, v)
+            else:
+                object.__setattr__(result, k, copy.deepcopy(v, memo))
+        return result
+
     def _load_mlx(self, model_path: str) -> tuple[Any, Any]:
-        """Load an MLX model and tokenizer from a HuggingFace repo or local path.
+        """Load an MLX model and tokenizer on a dedicated inference thread.
+
+        Creates ``self._mlx_executor`` — a single-thread
+        ``ThreadPoolExecutor`` that owns the MLX GPU stream for the lifetime
+        of this instance.  All generation (``_generate``, streaming) must
+        be dispatched to this executor so that every MLX operation runs on
+        the same thread and therefore the same GPU stream index as the
+        loaded model weights.
 
         Args:
             model_path: HuggingFace repo ID or absolute path to a local model directory.
@@ -151,8 +188,17 @@ class _MLXMixin:
                 " pip install mlx-lm"
             ) from exc
 
+        # One persistent worker thread owns the GPU stream for this instance.
+        # Model weights are loaded on that thread so all subsequent eval calls
+        # use the same stream index and avoid cross-thread stream mismatch.
+        self._mlx_executor: concurrent.futures.ThreadPoolExecutor = (
+            concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="apple-basefm-mlx"
+            )
+        )
+
         logger.info("AppleLocalLM: loading model %r via mlx-lm…", model_path)
-        model, tokenizer = mlx_lm.load(model_path)
+        model, tokenizer = self._mlx_executor.submit(mlx_lm.load, model_path).result()
         logger.info("AppleLocalLM: model loaded")
         return model, tokenizer
 
@@ -235,12 +281,19 @@ class _MLXMixin:
             generate_kwargs["logits_processors"] = logits_processors
         if prompt_cache is not None:
             generate_kwargs["prompt_cache"] = prompt_cache
-        text = mlx_lm.generate(
-            self._mlx_model,
-            self._mlx_tokenizer,
-            prompt=flat_prompt,
-            **generate_kwargs,
-        )
+
+        model = self._mlx_model
+        tokenizer = self._mlx_tokenizer
+
+        def _run() -> str:
+            return mlx_lm.generate(
+                model,
+                tokenizer,
+                prompt=flat_prompt,
+                **generate_kwargs,
+            )
+
+        text: str = self._mlx_executor.submit(_run).result()
         return text, flat_prompt
 
     async def _stream_generate_async(
@@ -253,21 +306,20 @@ class _MLXMixin:
     ) -> AsyncGenerator[str, None]:
         """Bridge mlx_lm.stream_generate() (sync generator) to an async generator.
 
-        Runs the synchronous MLX generator in a thread-pool executor and forwards
-        each token text to the caller via an asyncio.Queue, keeping the event
-        loop unblocked between tokens.
+        Submits the synchronous MLX generator to ``self._mlx_executor`` (the
+        dedicated inference thread) so the GPU stream is always consistent
+        with the stream used to load the model weights.  Tokens are forwarded
+        to the async consumer via an ``asyncio.Queue``.
 
         A threading.Event (cancel_event) signals the producer thread to stop
-        early if the async consumer is abandoned (e.g. cancelled coroutine or
-        exception in caller). The generator's try/finally block sets cancel_event
-        so the producer thread exits cleanly rather than continuing to generate
-        and hold GPU resources.
+        early if the async consumer is abandoned.
 
         Args:
             flat_prompt: Pre-formatted prompt string from _apply_chat_template.
             temperature: Sampling temperature forwarded to make_sampler.
             max_tokens: Maximum number of tokens to generate.
             logits_processors: Optional list of logits processors.
+            prompt_cache: Per-layer KV cache list, or None for mlx-lm default.
 
         Yields:
             Individual token strings as they are produced by the model.
@@ -276,7 +328,7 @@ class _MLXMixin:
         from mlx_lm.sample_utils import make_sampler
 
         loop = asyncio.get_running_loop()
-        queue: asyncio.Queue[str | None] = asyncio.Queue()
+        token_queue: asyncio.Queue[str | None] = asyncio.Queue()
         cancel_event = threading.Event()
         sampler = make_sampler(temp=float(temperature))
         stream_kwargs: dict[str, Any] = {
@@ -288,32 +340,32 @@ class _MLXMixin:
         if prompt_cache is not None:
             stream_kwargs["prompt_cache"] = prompt_cache
 
+        model = self._mlx_model
+        tokenizer = self._mlx_tokenizer
+
         def _run() -> None:
-            """Generate tokens in a thread and enqueue each one for the async consumer."""
+            """Generate tokens on the dedicated MLX thread and enqueue each one."""
             try:
                 for response in mlx_lm.stream_generate(
-                    self._mlx_model,
-                    self._mlx_tokenizer,
+                    model,
+                    tokenizer,
                     prompt=flat_prompt,
                     **stream_kwargs,
                 ):
                     if cancel_event.is_set():
                         break
-                    # call_soon_threadsafe is required to safely enqueue from a non-async thread.
-                    loop.call_soon_threadsafe(queue.put_nowait, response.text)
+                    loop.call_soon_threadsafe(token_queue.put_nowait, response.text)
             finally:
-                # Signal end-of-stream (or early cancellation) to the async consumer.
-                loop.call_soon_threadsafe(queue.put_nowait, None)
+                loop.call_soon_threadsafe(token_queue.put_nowait, None)
 
-        loop.run_in_executor(None, _run)
+        self._mlx_executor.submit(_run)
         try:
             while True:
-                token = await queue.get()
+                token = await token_queue.get()
                 if token is None:
                     break
                 yield token
         finally:
-            # Signal producer to stop if the consumer exits early (cancellation, exception).
             cancel_event.set()
 
 

@@ -60,7 +60,11 @@ def make_rotation_matrix(head_dim: int):
             mx.random.seed(42)
             gaussian = mx.random.normal(shape=(head_dim, head_dim))
         t0 = time.perf_counter()
-        Q, _ = mx.linalg.qr(gaussian)
+        # mx.linalg.qr is CPU-only in current MLX releases — explicitly pin
+        # the op to the CPU stream rather than inheriting the GPU default.
+        with mx.stream(mx.cpu):
+            Q, _ = mx.linalg.qr(gaussian)
+            mx.eval(Q)
         elapsed = time.perf_counter() - t0
         logger.info(
             "Generated %dx%d QR rotation matrix for KV cache in %.3fs",
